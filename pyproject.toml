@@ -1,6 +1,18 @@
 [project]
 name = "defect-prospector"
 version = "0.1.0"
-description = "Add your description here"
-requires-python = ">=3.13"
-dependencies = []
+description = "Bug dataset collection tool"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.1",
+    "pygithub>=2.1",
+    "gitpython>=3.1",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+bp = "bug_prospector.cli.main:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bug_prospector*"]
