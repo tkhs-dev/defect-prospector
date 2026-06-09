@@ -20,21 +20,6 @@ class UserInfo:
 
 
 @dataclass
-class CommentInfo:
-    author: UserInfo
-    body: str
-    created_at: datetime
-
-    @classmethod
-    def from_dict(cls, d: dict) -> CommentInfo:
-        return cls(
-            author=UserInfo.from_dict(d["author"]),
-            body=d["body"],
-            created_at=_dt(d["created_at"]),
-        )
-
-
-@dataclass
 class IssueInfo:
     tracker_type: str
     tracker_url: str
@@ -48,7 +33,6 @@ class IssueInfo:
     severity: str | None = None
     assignees: list[UserInfo] = field(default_factory=list)
     closed_at: datetime | None = None
-    comments: list[CommentInfo] = field(default_factory=list)
     linked_prs: list[str] = field(default_factory=list)
 
     @classmethod
@@ -66,7 +50,6 @@ class IssueInfo:
             severity=d.get("severity"),
             assignees=[UserInfo.from_dict(a) for a in d.get("assignees", [])],
             closed_at=_dt(d.get("closed_at")),
-            comments=[CommentInfo.from_dict(c) for c in d.get("comments", [])],
             linked_prs=d.get("linked_prs", []),
         )
 

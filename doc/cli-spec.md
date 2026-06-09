@@ -191,7 +191,7 @@ bp checkout <bug-id> [options]
 
 | オプション | 省略形 | デフォルト | 説明 |
 |---|---|---|---|
-| `--state STATE` | `-s` | `buggy` | `buggy`（修正前）/ `fixed`（修正後） |
+| `--state STATE` | `-s` | `buggy` | `buggy`（PR前）/ `fix`（マージ後） |
 | `--output-dir PATH` | `-o` | `./<bug-id>` | チェックアウト先ディレクトリ |
 | `--no-deps` | | off | 依存ファイル（pyproject.toml等）を含めない |
 
@@ -202,7 +202,7 @@ bp checkout <bug-id> [options]
 bp checkout github-pallets-flask-1234
 
 # 修正済み状態を指定ディレクトリにチェックアウト
-bp checkout github-pallets-flask-1234 --state fixed --output-dir /tmp/flask-fixed
+bp checkout github-pallets-flask-1234 --state fix --output-dir /tmp/flask-fix
 
 # 複数バグを連続チェックアウトしてビルド確認
 for id in $(bp list --format json | jq -r '.[].id'); do
@@ -256,7 +256,6 @@ bp export [options]
 | `--language LANG` | | 言語で絞り込み |
 | `--severity SEV` | | 重要度で絞り込み |
 | `--include-diff` | off | diff本文をエクスポートに含める |
-| `--include-comments` | off | Issueコメントをエクスポートに含める |
 
 ### 使用例
 

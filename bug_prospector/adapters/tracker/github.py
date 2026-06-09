@@ -9,7 +9,7 @@ import requests as _requests
 import github as gh
 from github import Github, GithubException, RateLimitExceededException
 
-from ...core.models.issue import CommentInfo, IssueInfo, UserInfo
+from ...core.models.issue import IssueInfo, UserInfo
 from ...core.models.query import IssueQuery
 from ...core.models.record import PRInfo
 from .base import IssueTrackerAdapter
@@ -149,17 +149,6 @@ class GitHubAdapter(IssueTrackerAdapter):
         return None
 
     def _to_issue_info(self, issue: gh.Issue.Issue, repo_slug: str) -> IssueInfo:
-        comments: list[CommentInfo] = []
-        try:
-            for c in self._paginate(issue.get_comments()):
-                comments.append(CommentInfo(
-                    author=_user(c.user),
-                    body=c.body or "",
-                    created_at=_utc(c.created_at),
-                ))
-        except GithubException as e:
-            logger.debug(f"get_comments failed for #{issue.number}: {e}")
-
         return IssueInfo(
             tracker_type="github",
             tracker_url=f"https://github.com/{repo_slug}",
@@ -171,7 +160,6 @@ class GitHubAdapter(IssueTrackerAdapter):
             reporter=_user(issue.user),
             created_at=_utc(issue.created_at),
             closed_at=_utc(issue.closed_at) if issue.closed_at else None,
-            comments=comments,
             assignees=[_user(a) for a in (issue.assignees or [])],
         )
 

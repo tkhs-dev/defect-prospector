@@ -31,12 +31,10 @@ BugRecord
 | `body` | str | Issue本文 |
 | `labels` | list[str] | ラベル・タグ一覧 |
 | `severity` | str \| None | 重要度（`critical`/`major`/`minor`/`trivial`） |
-| `priority` | str \| None | 優先度 |
 | `reporter` | UserInfo | 報告者情報 |
 | `assignees` | list[UserInfo] | 担当者一覧 |
 | `created_at` | datetime | Issue作成日時（UTC） |
 | `closed_at` | datetime \| None | Issue解決日時（UTC） |
-| `comments` | list[CommentInfo] | コメント一覧 |
 | `linked_prs` | list[str] | 関連するPR/MR URL一覧 |
 
 ### 3.2 UserInfo
@@ -47,15 +45,7 @@ BugRecord
 | `display_name` | str \| None | 表示名 |
 | `url` | str \| None | プロフィールURL |
 
-### 3.3 CommentInfo
-
-| フィールド | 型 | 説明 |
-|---|---|---|
-| `author` | UserInfo | コメント投稿者 |
-| `body` | str | コメント本文 |
-| `created_at` | datetime | 投稿日時（UTC） |
-
-### 3.4 RepoInfo
+### 3.3 RepoInfo
 
 | フィールド | 型 | 説明 |
 |---|---|---|
@@ -66,7 +56,7 @@ BugRecord
 | `buggy_files` | list[str] | 修正コミットで変更されたファイルパス一覧 |
 | `module_path` | str \| None | モノリポの場合のサブモジュールパス |
 
-### 3.5 ReproInfo
+### 3.4 ReproInfo
 
 再現するために必要な情報を集約する。
 
@@ -78,7 +68,7 @@ BugRecord
 | `environment` | EnvironmentInfo | 実行環境情報 |
 | `test_cases` | list[TestCaseInfo] | 関連テストケース一覧 |
 
-### 3.6 EnvironmentInfo
+### 3.5 EnvironmentInfo
 
 | フィールド | 型 | 説明 |
 |---|---|---|
@@ -91,7 +81,7 @@ BugRecord
 | `build_commands` | list[str] | ビルドコマンド（言語アダプタが推定） |
 | `test_commands` | list[str] | テスト実行コマンド（言語アダプタが推定） |
 
-### 3.7 DependencyInfo
+### 3.6 DependencyInfo
 
 | フィールド | 型 | 説明 |
 |---|---|---|
@@ -99,7 +89,7 @@ BugRecord
 | `version` | str \| None | バージョン指定文字列 |
 | `source` | str \| None | 取得元（`requirements.txt` 等） |
 
-### 3.8 TestCaseInfo
+### 3.7 TestCaseInfo
 
 | フィールド | 型 | 説明 |
 |---|---|---|
@@ -107,7 +97,7 @@ BugRecord
 | `function_name` | str \| None | テスト関数・メソッド名 |
 | `test_type` | str | テスト種別（`unit` / `integration` / `regression`） |
 
-### 3.9 FixInfo
+### 3.8 FixInfo
 
 | フィールド | 型 | 説明 |
 |---|---|---|
@@ -120,7 +110,7 @@ BugRecord
 | `lines_added` | int | 追加行数 |
 | `lines_deleted` | int | 削除行数 |
 
-### 3.10 MetaInfo
+### 3.9 MetaInfo
 
 | フィールド | 型 | 説明 |
 |---|---|---|

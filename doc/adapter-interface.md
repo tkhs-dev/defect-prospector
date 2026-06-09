@@ -121,10 +121,6 @@ class IssueTrackerAdapter(ABC):
         """Issue詳細を1件取得する"""
 
     @abstractmethod
-    def get_comments(self, issue_id: str) -> list[CommentInfo]:
-        """Issueのコメントを取得する"""
-
-    @abstractmethod
     def get_linked_refs(self, issue_id: str) -> list[str]:
         """Issueに紐付くコミットref / PRのブランチ名一覧を返す"""
 ```
