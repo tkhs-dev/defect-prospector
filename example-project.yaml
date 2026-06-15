@@ -17,7 +17,7 @@ search:
   labels: [bug]
   state: closed
   limit: 100
-  since: "2021-01-01"
+  since: "2011-01-01"
   # true: マージ済みPRが紐付いていないIssueはスキップ
   require_pr: true
 
@@ -30,7 +30,7 @@ language:
     - "*_test.py"
   # テスト実行前の環境セットアップ（worktree 内で一度だけ実行）
   setup_commands:
-    - "pip install -e '.[dev]' --quiet"
+    - "uv sync --quiet"
   # テスト実行コマンド
   test_command: "pytest --tb=short -q"
   # タイムアウト（秒）
@@ -39,7 +39,7 @@ language:
 validation:
   # true にするとリバースパッチ戦略でテスト検証を行い
   # FAIL→PASS が確認されたものだけ "valid" として記録する
-  enabled: false
+  enabled: true
   # reverse_patch_source: ソースファイルのみ逆パッチ（fixで追加されたテストは保持）
   # reverse_patch_all:    全ファイルを逆パッチ
   strategy: reverse_patch_source

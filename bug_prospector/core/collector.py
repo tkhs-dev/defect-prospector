@@ -55,11 +55,14 @@ class Collector:
         """
         tracker = GitHubAdapter(token=project.tracker_auth.token)
         vcs = GitAdapter()
-        validator = Validator(project.language, project.validation)
 
         slug = GitHubAdapter.parse_slug(project.tracker_url)
         repo_slug_flat = slug.replace("/", "-")
         local_repo = self._dataset_dir / "repos" / repo_slug_flat
+
+        worktree_path = self._dataset_dir / "worktrees" / repo_slug_flat if project.validation.enabled else None
+        patch_dir = self._dataset_dir / "patches" / project.project_id if project.validation.enabled else None
+        validator = Validator(project.language, project.validation, worktree_path=worktree_path, patch_dir=patch_dir)
 
         if not dry_run:
             vcs.ensure_repo(project.repo_url, local_repo)
@@ -73,6 +76,7 @@ class Collector:
             repo_url=project.tracker_url,
             labels=search.labels,
             state=search.state,
+            linked_pr=search.require_pr,
             limit=effective_limit,
             since=since_dt,
             until=until_dt,
@@ -82,42 +86,45 @@ class Collector:
 
         new_count = skipped_count = failed_count = 0
 
-        for issue in issues:
-            bug_id = f"github-{repo_slug_flat}-{issue.issue_id}"
+        try:
+            for issue in issues:
+                bug_id = f"github-{repo_slug_flat}-{issue.issue_id}"
 
-            if self._storage.exists(bug_id):
-                skipped_count += 1
-                logger.debug(f"  [{bug_id}] already collected, skipping")
-                continue
+                if self._storage.exists(bug_id):
+                    skipped_count += 1
+                    logger.debug(f"  [{bug_id}] already collected, skipping")
+                    continue
 
-            try:
-                record = self._build_record(
-                    bug_id=bug_id,
-                    issue=issue,
-                    project=project,
-                    slug=slug,
-                    local_repo=local_repo,
-                    tracker=tracker,
-                    vcs=vcs,
-                    validator=validator,
-                    dry_run=dry_run,
-                )
-            except Exception as e:
-                failed_count += 1
-                logger.warning(f"  [{bug_id}] failed: {e}")
-                continue
+                try:
+                    record = self._build_record(
+                        bug_id=bug_id,
+                        issue=issue,
+                        project=project,
+                        slug=slug,
+                        local_repo=local_repo,
+                        tracker=tracker,
+                        vcs=vcs,
+                        validator=validator,
+                        dry_run=dry_run,
+                    )
+                except Exception as e:
+                    failed_count += 1
+                    logger.warning(f"  [{bug_id}] failed: {e}")
+                    continue
 
-            if record is None:
-                # require_pr かつ PR なし → スキップ（カウントは failed ではなく skipped）
-                skipped_count += 1
-                continue
+                if record is None:
+                    # require_pr かつ PR なし → スキップ（カウントは failed ではなく skipped）
+                    skipped_count += 1
+                    continue
 
-            if not dry_run:
-                self._storage.save(record)
+                if not dry_run:
+                    self._storage.save(record)
 
-            new_count += 1
-            val_status = record.validation.status if record.validation else "no-validation"
-            logger.info(f"  [{bug_id}] OK  validation={val_status}")
+                new_count += 1
+                val_status = record.validation.status if record.validation else "no-validation"
+                logger.info(f"  [{bug_id}] OK  validation={val_status}")
+        finally:
+            validator.close()
 
         return new_count, skipped_count, failed_count
 
@@ -191,6 +198,7 @@ class Collector:
                 repo_path=local_repo,
                 fix_ref=fix_sha,
                 unified_diff=diff.unified_diff,
+                bug_id=bug_id,
             )
 
         return BugRecord(

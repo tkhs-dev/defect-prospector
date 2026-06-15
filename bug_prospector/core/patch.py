@@ -74,9 +74,15 @@ def split_diff(unified_diff: str, test_patterns: list[str]) -> tuple[str, str]:
     return source_diff, test_diff
 
 
-def apply_reverse_patch(repo_path: Path, diff: str) -> tuple[bool, str]:
+def apply_reverse_patch(
+    repo_path: Path,
+    diff: str,
+    save_path: Path | None = None,
+) -> tuple[bool, str]:
     """
     diff の逆パッチをワーキングツリーに適用する。
+
+    save_path が指定された場合はパッチファイルをそこに保存して削除しない。
 
     Returns:
         (success, error_message)
@@ -84,9 +90,14 @@ def apply_reverse_patch(repo_path: Path, diff: str) -> tuple[bool, str]:
     if not diff.strip():
         return True, ""
 
-    patch_path = (
-        Path(tempfile.gettempdir()) / f"bp-patch-{uuid.uuid4().hex[:8]}.patch"
-    )
+    if save_path is not None:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        patch_path = save_path
+        cleanup = False
+    else:
+        patch_path = Path(tempfile.gettempdir()) / f"bp-patch-{uuid.uuid4().hex[:8]}.patch"
+        cleanup = True
+
     try:
         patch_path.write_text(diff, encoding="utf-8", newline="\n")
         result = subprocess.run(
@@ -95,6 +106,9 @@ def apply_reverse_patch(repo_path: Path, diff: str) -> tuple[bool, str]:
             capture_output=True,
             text=True,
         )
+        print(result.stdout)
+        print(result.stderr)
         return result.returncode == 0, result.stderr
     finally:
-        patch_path.unlink(missing_ok=True)
+        if cleanup:
+            patch_path.unlink(missing_ok=True)

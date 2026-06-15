@@ -20,7 +20,7 @@ import click
 @click.pass_context
 def cli(ctx: click.Context, dataset_dir: str, verbose: bool) -> None:
     ctx.ensure_object(dict)
-    ctx.obj["dataset_dir"] = Path(dataset_dir)
+    ctx.obj["dataset_dir"] = Path(dataset_dir).resolve()
     ctx.obj["verbose"] = verbose
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,

@@ -1,0 +1,43 @@
+# プロジェクト設定サンプル
+# 使い方: bp collect --project example-project.yaml
+
+project_id: "clap-rs-clap"
+
+repo:
+  url: https://github.com/clap-rs/clap
+  vcs_type: git
+
+tracker:
+  type: github
+  url: https://github.com/clap-rs/clap
+  auth:
+    token: ${GITHUB_TOKEN}
+
+search:
+  labels: [C-bug]
+  state: closed
+  limit: 500
+  since: "2011-01-01"
+  # true: マージ済みPRが紐付いていないIssueはスキップ
+  require_pr: true
+
+language:
+  type: python
+  # テストファイルと判定するパターン（リバースパッチ時のソース/テスト分割に使用）
+  test_patterns:
+    - "tests/**"
+  # テスト実行前の環境セットアップ（worktree 内で一度だけ実行）
+  setup_commands:
+    - "cargo build --quiet"
+  # テスト実行コマンド
+  test_command: "cargo test --quiet"
+  # タイムアウト（秒）
+  test_timeout: 120
+
+validation:
+  # true にするとリバースパッチ戦略でテスト検証を行い
+  # FAIL→PASS が確認されたものだけ "valid" として記録する
+  enabled: true
+  # reverse_patch_source: ソースファイルのみ逆パッチ（fixで追加されたテストは保持）
+  # reverse_patch_all:    全ファイルを逆パッチ
+  strategy: reverse_patch_source

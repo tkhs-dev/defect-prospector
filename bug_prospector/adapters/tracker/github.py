@@ -38,8 +38,9 @@ class GitHubAdapter(IssueTrackerAdapter):
         label_terms = " ".join(f"label:{l}" for l in (query.labels or ["bug"]))
         since_term = f" created:>={query.since.strftime('%Y-%m-%d')}" if query.since else ""
         until_term = f" created:<={query.until.strftime('%Y-%m-%d')}" if query.until else ""
+        linked_pr_term = " linked:pr" if query.linked_pr else ""
 
-        q = f"repo:{slug} is:issue is:closed {label_terms}{since_term}{until_term}"
+        q = f"repo:{slug} is:issue is:closed {label_terms}{since_term}{until_term}{linked_pr_term}"
         logger.debug(f"GitHub search: {q}")
 
         results: list[IssueInfo] = []
@@ -96,7 +97,7 @@ class GitHubAdapter(IssueTrackerAdapter):
         """GitHub Timeline API で cross-referenced なマージ済みPRを探す。"""
         headers = {
             "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
+            "X-GitHub-Api-Version": "2026-03-10",
         }
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
@@ -123,9 +124,11 @@ class GitHubAdapter(IssueTrackerAdapter):
                 if item.get("event") != "cross-referenced":
                     continue
                 source = item.get("source", {})
-                if source.get("type") != "pull_request":
+                if source.get("type") != "issue":
                     continue
                 pr_data = source.get("issue", {})
+                if pr_data.get("pull_request") is None:
+                    continue
                 if not pr_data.get("pull_request", {}).get("merged_at"):
                     continue
                 pr_number = pr_data["number"]
