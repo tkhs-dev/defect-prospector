@@ -99,7 +99,8 @@ def apply_reverse_patch(
         cleanup = True
 
     try:
-        patch_path.write_text(diff, encoding="utf-8", newline="\n")
+        content = diff if diff.endswith("\n") else diff + "\n"
+        patch_path.write_text(content, encoding="utf-8", newline="\n")
         result = subprocess.run(
             ["git", "apply", "--reverse", "--whitespace=fix", str(patch_path)],
             cwd=repo_path,
