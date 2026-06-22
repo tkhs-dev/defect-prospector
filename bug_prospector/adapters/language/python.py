@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from .base import LanguageAdapter
+from ...core.models.record import TestCaseResult
 
 
 class PythonAdapter(LanguageAdapter):
@@ -29,3 +31,30 @@ class PythonAdapter(LanguageAdapter):
         if (repo_path / "requirements.txt").exists():
             return ["pip install -r requirements.txt --quiet"]
         return []
+
+    def parse_test_output(self, stdout: str, stderr: str) -> list[TestCaseResult]:
+        """pytest の出力からテストケース単体の結果を抽出する。
+
+        verbose (-v): "tests/foo.py::test_name PASSED/FAILED [ N%]"
+        quiet   (-q): 失敗行のみ "FAILED tests/foo.py::test_name - msg"
+        """
+        results: list[TestCaseResult] = []
+        combined = stdout + "\n" + stderr
+
+        for line in combined.splitlines():
+            # verbose: "tests/foo.py::test_name PASSED" or "FAILED"
+            m = re.match(r'^(\S+::[\w\[\]-]+)\s+(PASSED|FAILED)(?:\s|$)', line)
+            if m:
+                results.append(TestCaseResult(name=m.group(1), passed=m.group(2) == "PASSED"))
+                continue
+
+            # quiet: "FAILED tests/foo.py::test_name - AssertionError: ..."
+            m = re.match(r'^FAILED (\S+::[\w\[\]-]+)\s*(?:-\s*(.+))?$', line)
+            if m:
+                results.append(TestCaseResult(
+                    name=m.group(1),
+                    passed=False,
+                    message=(m.group(2) or "").strip() or None,
+                ))
+
+        return results

@@ -8,6 +8,27 @@ from .issue import IssueInfo
 
 
 # ---------------------------------------------------------------------------
+# テストケース単体の結果
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TestCaseResult:
+    name: str
+    passed: bool
+    duration_seconds: float | None = None
+    message: str | None = None  # 失敗メッセージ
+
+    @classmethod
+    def from_dict(cls, d: dict) -> TestCaseResult:
+        return cls(
+            name=d["name"],
+            passed=d["passed"],
+            duration_seconds=d.get("duration_seconds"),
+            message=d.get("message"),
+        )
+
+
+# ---------------------------------------------------------------------------
 # PR情報
 # ---------------------------------------------------------------------------
 
@@ -39,7 +60,11 @@ class TestRunResult:
     stdout: str = ""
     stderr: str = ""
     duration_seconds: float = 0.0
-    failed_tests: list[str] = field(default_factory=list)
+    test_cases: list[TestCaseResult] = field(default_factory=list)
+
+    @property
+    def failed_tests(self) -> list[str]:
+        return [tc.name for tc in self.test_cases if not tc.passed]
 
     @classmethod
     def from_dict(cls, d: dict) -> TestRunResult:
@@ -49,7 +74,7 @@ class TestRunResult:
             stdout=d.get("stdout", ""),
             stderr=d.get("stderr", ""),
             duration_seconds=d.get("duration_seconds", 0.0),
-            failed_tests=d.get("failed_tests", []),
+            test_cases=[TestCaseResult.from_dict(tc) for tc in d.get("test_cases", [])],
         )
 
 

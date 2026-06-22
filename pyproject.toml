@@ -13,6 +13,12 @@ dependencies = [
 [project.scripts]
 bp = "bug_prospector.cli.main:cli"
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["bug_prospector*"]

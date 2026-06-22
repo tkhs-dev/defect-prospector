@@ -30,7 +30,7 @@ language:
   setup_commands:
     - "cargo build --quiet"
   # テスト実行コマンド
-  test_command: "cargo test --quiet"
+  test_command: "cargo test"
   # タイムアウト（秒）
   test_timeout: 120
 
@@ -44,4 +44,4 @@ validation:
   # true にすると dataset/test-logs/{project_id}/ にテスト出力を保存する
   save_test_output: false
   # true にすると失敗したテストケース名をログに出力する
-  show_failed_tests: false
+  show_failed_tests: true

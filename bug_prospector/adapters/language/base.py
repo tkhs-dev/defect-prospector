@@ -3,6 +3,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+from ...core.models.record import TestCaseResult
+
 
 class LanguageAdapter(ABC):
 
@@ -25,3 +27,12 @@ class LanguageAdapter(ABC):
     @abstractmethod
     def default_setup_commands(self, repo_path: Path) -> list[str]:
         """デフォルトの環境セットアップコマンドを返す。"""
+
+    @abstractmethod
+    def parse_test_output(self, stdout: str, stderr: str) -> list[TestCaseResult]:
+        """
+        テスト実行の stdout/stderr を解析し、テストケース単体の結果一覧を返す。
+
+        テストコマンドが非 verbose モードの場合、失敗ケースのみ返すことがある。
+        解析不能な出力では空リストを返す。
+        """
