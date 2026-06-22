@@ -39,6 +39,7 @@ class TestRunResult:
     stdout: str = ""
     stderr: str = ""
     duration_seconds: float = 0.0
+    failed_tests: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict) -> TestRunResult:
@@ -48,6 +49,7 @@ class TestRunResult:
             stdout=d.get("stdout", ""),
             stderr=d.get("stderr", ""),
             duration_seconds=d.get("duration_seconds", 0.0),
+            failed_tests=d.get("failed_tests", []),
         )
 
 

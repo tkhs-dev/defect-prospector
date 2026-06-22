@@ -15,6 +15,7 @@ patch_dir を指定すると適用したパッチを bug_id.patch として保�
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import time
 import uuid
@@ -127,10 +128,15 @@ class Validator:
             log_stem = bug_id or fix_ref[:16]
             fix_log = self._test_log_dir / f"{log_stem}-fix.log" if self._test_log_dir else None
             fix_result = self._run_tests(worktree, log_path=fix_log)
+            if self._val.show_failed_tests:
+                fix_result.failed_tests = self._extract_failed_tests(fix_result.stdout, fix_result.stderr)
             logger.debug(
                 f"  fix tests: {'PASS' if fix_result.passed else 'FAIL'} "
                 f"({fix_result.duration_seconds:.1f}s)"
             )
+            if self._val.show_failed_tests and fix_result.failed_tests:
+                for name in fix_result.failed_tests:
+                    logger.info(f"    [fix  FAIL] {name}")
 
             # --- リバースパッチ対象を決定 ---
             if self._val.strategy == "reverse_patch_source":
@@ -156,10 +162,15 @@ class Validator:
             # --- バグ状態でテスト ---
             buggy_log = self._test_log_dir / f"{log_stem}-buggy.log" if self._test_log_dir else None
             buggy_result = self._run_tests(worktree, log_path=buggy_log)
+            if self._val.show_failed_tests:
+                buggy_result.failed_tests = self._extract_failed_tests(buggy_result.stdout, buggy_result.stderr)
             logger.debug(
                 f"  buggy tests: {'PASS' if buggy_result.passed else 'FAIL'} "
                 f"({buggy_result.duration_seconds:.1f}s)"
             )
+            if self._val.show_failed_tests and buggy_result.failed_tests:
+                for name in buggy_result.failed_tests:
+                    logger.info(f"    [buggy FAIL] {name}")
 
             is_valid = fix_result.passed and not buggy_result.passed
             return ValidationResult(
@@ -241,3 +252,37 @@ class Validator:
                 stderr="[test run timed out]",
                 duration_seconds=self._lang.test_timeout,
             )
+
+    def _extract_failed_tests(self, stdout: str, stderr: str) -> list[str]:
+        """テスト出力から失敗したテストケース名を抽出する。"""
+        combined = stdout + "\n" + stderr
+        lang = self._lang.type
+
+        if lang == "rust":
+            # cargo test: "test path::to::test_name ... FAILED"
+            return re.findall(r'^test (\S+) \.\.\. FAILED', combined, re.MULTILINE)
+
+        if lang == "python":
+            # pytest: "FAILED tests/foo.py::TestClass::test_name - ..."
+            return re.findall(r'^FAILED (\S+)', combined, re.MULTILINE)
+
+        if lang in ("javascript", "typescript"):
+            # Jest: "  ✕ test name (Nms)" or "  × test name"
+            names = re.findall(r'^\s+[✕×✗]\s+(.+?)(?:\s+\(\d+\s*m?s\))?$', combined, re.MULTILINE)
+            return [n.strip() for n in names]
+
+        if lang == "go":
+            # go test: "--- FAIL: TestName (0.00s)"
+            return re.findall(r'^--- FAIL: (\S+)', combined, re.MULTILINE)
+
+        if lang == "java":
+            # JUnit/Maven: "[ERROR] testName  Time elapsed: ... <<< FAILURE!"
+            return re.findall(r'^\[ERROR\] (\S+).*<<<\s+FAIL', combined, re.MULTILINE)
+
+        # 汎用フォールバック: FAILED / FAIL: を含む行
+        results = []
+        for line in combined.splitlines():
+            stripped = line.strip()
+            if re.search(r'\bFAILED\b|\bFAIL:', stripped):
+                results.append(stripped)
+        return results

@@ -53,6 +53,8 @@ class ValidationConfig:
     strategy: str = "reverse_patch_source"
     # True にするとテスト実行の全出力を dataset/test-logs/ に保存する
     save_test_output: bool = False
+    # True にすると失敗したテストケース名をログに出力する
+    show_failed_tests: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +108,7 @@ class ProjectConfig:
             enabled=val_d.get("enabled", False),
             strategy=val_d.get("strategy", "reverse_patch_source"),
             save_test_output=val_d.get("save_test_output", False),
+            show_failed_tests=val_d.get("show_failed_tests", False),
         )
 
         tracker_d = d.get("tracker", {})

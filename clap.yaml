@@ -43,3 +43,5 @@ validation:
   strategy: reverse_patch_source
   # true にすると dataset/test-logs/{project_id}/ にテスト出力を保存する
   save_test_output: false
+  # true にすると失敗したテストケース名をログに出力する
+  show_failed_tests: false
