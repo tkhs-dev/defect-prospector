@@ -51,6 +51,8 @@ class ValidationConfig:
     # "reverse_patch_source" : ソースファイルのみ逆パッチ（テストは保持）
     # "reverse_patch_all"    : 全ファイルを逆パッチ
     strategy: str = "reverse_patch_source"
+    # True にするとテスト実行の全出力を dataset/test-logs/ に保存する
+    save_test_output: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +105,7 @@ class ProjectConfig:
         validation = ValidationConfig(
             enabled=val_d.get("enabled", False),
             strategy=val_d.get("strategy", "reverse_patch_source"),
+            save_test_output=val_d.get("save_test_output", False),
         )
 
         tracker_d = d.get("tracker", {})

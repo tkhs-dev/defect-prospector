@@ -47,11 +47,13 @@ class Validator:
         val_config: ValidationConfig,
         worktree_path: Path | None = None,
         patch_dir: Path | None = None,
+        test_log_dir: Path | None = None,
     ) -> None:
         self._lang = lang_config
         self._val = val_config
         self._worktree_path = worktree_path  # 永続worktreeのパス; None=一時worktree
         self._patch_dir = patch_dir           # パッチ保存先; None=保存しない
+        self._test_log_dir = test_log_dir     # テスト出力保存先; None=保存しない
         self._active_worktree: Path | None = None
         self._worktree_repo: git.Repo | None = None
 
@@ -122,7 +124,9 @@ class Validator:
                 return ValidationResult(status=SETUP_FAILED)
 
             # --- fix 状態でテスト ---
-            fix_result = self._run_tests(worktree)
+            log_stem = bug_id or fix_ref[:16]
+            fix_log = self._test_log_dir / f"{log_stem}-fix.log" if self._test_log_dir else None
+            fix_result = self._run_tests(worktree, log_path=fix_log)
             logger.debug(
                 f"  fix tests: {'PASS' if fix_result.passed else 'FAIL'} "
                 f"({fix_result.duration_seconds:.1f}s)"
@@ -150,7 +154,8 @@ class Validator:
                 logger.debug(f"  patch saved: {patch_save_path}")
 
             # --- バグ状態でテスト ---
-            buggy_result = self._run_tests(worktree)
+            buggy_log = self._test_log_dir / f"{log_stem}-buggy.log" if self._test_log_dir else None
+            buggy_result = self._run_tests(worktree, log_path=buggy_log)
             logger.debug(
                 f"  buggy tests: {'PASS' if buggy_result.passed else 'FAIL'} "
                 f"({buggy_result.duration_seconds:.1f}s)"
@@ -204,7 +209,7 @@ class Validator:
                 return False, "setup command timed out"
         return True, ""
 
-    def _run_tests(self, cwd: Path) -> TestRunResult:
+    def _run_tests(self, cwd: Path, log_path: Path | None = None) -> TestRunResult:
         start = time.monotonic()
         try:
             r = subprocess.run(
@@ -212,12 +217,22 @@ class Validator:
                 capture_output=True, text=True,
                 timeout=self._lang.test_timeout,
             )
+            duration = time.monotonic() - start
+            if log_path is not None:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_path.write_text(
+                    f"exit_code: {r.returncode}  duration: {duration:.1f}s\n"
+                    f"=== stdout ===\n{r.stdout}\n"
+                    f"=== stderr ===\n{r.stderr}",
+                    encoding="utf-8",
+                )
+                logger.debug(f"  test output saved: {log_path}")
             return TestRunResult(
                 passed=r.returncode == 0,
                 exit_code=r.returncode,
                 stdout=r.stdout[-4096:],
                 stderr=r.stderr[-2048:],
-                duration_seconds=time.monotonic() - start,
+                duration_seconds=duration,
             )
         except subprocess.TimeoutExpired:
             return TestRunResult(

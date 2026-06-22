@@ -60,9 +60,11 @@ class Collector:
         repo_slug_flat = slug.replace("/", "-")
         local_repo = self._dataset_dir / "repos" / repo_slug_flat
 
-        worktree_path = self._dataset_dir / "worktrees" / repo_slug_flat if project.validation.enabled else None
-        patch_dir = self._dataset_dir / "patches" / project.project_id if project.validation.enabled else None
-        validator = Validator(project.language, project.validation, worktree_path=worktree_path, patch_dir=patch_dir)
+        val = project.validation
+        worktree_path = self._dataset_dir / "worktrees" / repo_slug_flat if val.enabled else None
+        patch_dir = self._dataset_dir / "patches" / project.project_id if val.enabled else None
+        test_log_dir = self._dataset_dir / "test-logs" / project.project_id if val.enabled and val.save_test_output else None
+        validator = Validator(project.language, val, worktree_path=worktree_path, patch_dir=patch_dir, test_log_dir=test_log_dir)
 
         if not dry_run:
             vcs.ensure_repo(project.repo_url, local_repo)

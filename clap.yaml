@@ -41,3 +41,5 @@ validation:
   # reverse_patch_source: ソースファイルのみ逆パッチ（fixで追加されたテストは保持）
   # reverse_patch_all:    全ファイルを逆パッチ
   strategy: reverse_patch_source
+  # true にすると dataset/test-logs/{project_id}/ にテスト出力を保存する
+  save_test_output: false
