@@ -136,16 +136,23 @@ def collect(
     if project.validation.enabled:
         click.echo(f"  Validation enabled  (strategy={project.validation.strategy})")
 
+    from bug_prospector.core.collector import CollectionInterrupted
+
     storage = Storage(dataset_dir)
     collector = Collector(storage=storage, dataset_dir=dataset_dir)
 
-    new, skipped, failed = collector.run_project(
-        project=project,
-        limit_override=limit,
-        dry_run=dry_run,
-    )
-
-    click.echo(f"\nCollected: {new} new  |  {skipped} skipped  |  {failed} failed")
+    try:
+        new, skipped, failed = collector.run_project(
+            project=project,
+            limit_override=limit,
+            dry_run=dry_run,
+        )
+        click.echo(f"\nCollected: {new} new  |  {skipped} skipped  |  {failed} failed")
+    except CollectionInterrupted as e:
+        click.echo(
+            f"\n[interrupted] Collected so far: {e.new} new  |  {e.skipped} skipped  |  {e.failed} failed"
+        )
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

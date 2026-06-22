@@ -37,6 +37,14 @@ logger = logging.getLogger(__name__)
 _VERSION = "0.1.0"
 
 
+class CollectionInterrupted(Exception):
+    """Ctrl+C による中断時に中途カウントを運ぶ例外。"""
+    def __init__(self, new: int, skipped: int, failed: int) -> None:
+        self.new = new
+        self.skipped = skipped
+        self.failed = failed
+
+
 class Collector:
 
     def __init__(self, storage: Storage, dataset_dir: Path) -> None:
@@ -125,6 +133,8 @@ class Collector:
                 new_count += 1
                 val_status = record.validation.status if record.validation else "no-validation"
                 logger.info(f"  [{bug_id}] OK  validation={val_status}")
+        except KeyboardInterrupt:
+            raise CollectionInterrupted(new_count, skipped_count, failed_count)
         finally:
             validator.close()
 
