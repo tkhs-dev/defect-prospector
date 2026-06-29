@@ -40,6 +40,23 @@ _VALID = "valid"
 _INVALID = "invalid"
 
 
+def _is_valid(fix_result: TestRunResult, buggy_result: TestRunResult) -> bool:
+    """バグ修正の有効性を判定する。
+
+    ケース単位のデータがある場合:
+      buggy で失敗 かつ fix で成功 に変わったテストが1件以上あれば valid。
+      これにより修正とは無関係に元から落ちているテストを除外できる。
+
+    ケースデータがない場合:
+      全体結果が FAIL→PASS であれば valid（フォールバック）。
+    """
+    if fix_result.test_cases and buggy_result.test_cases:
+        fix_passed = {tc.name for tc in fix_result.test_cases if tc.passed}
+        buggy_failed = {tc.name for tc in buggy_result.test_cases if not tc.passed}
+        return bool(fix_passed & buggy_failed)
+    return fix_result.passed and not buggy_result.passed
+
+
 class Validator:
 
     def __init__(
@@ -174,7 +191,7 @@ class Validator:
                 for name in buggy_result.failed_tests:
                     logger.info(f"    [buggy FAIL] {name}")
 
-            is_valid = fix_result.passed and not buggy_result.passed
+            is_valid = _is_valid(fix_result, buggy_result)
             return ValidationResult(
                 status=_VALID if is_valid else _INVALID,
                 fix_result=fix_result,

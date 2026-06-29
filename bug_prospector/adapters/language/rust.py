@@ -33,55 +33,56 @@ class RustAdapter(LanguageAdapter):
                   "test src/lib.rs - (line N) ... ok"  (doctest)
         example:  "Testing examples/foo.md:N ... ok 8ms 467us 700ns"
         quiet:    失敗名のみ failures: セクションに列挙される
+
+        パニック等でスレッドが異常終了した場合、verbose の "... FAILED" 行が出力されず
+        末尾の failures: サマリーにのみ名前が現れることがある。
+        このため verbose 解析と failures サマリー解析を常に両方実行し、
+        サマリーに存在するが verbose で捕捉できなかった失敗を補完する。
         """
         results: list[TestCaseResult] = []
+        seen: set[str] = set()
         combined = stdout + "\n" + stderr
         lines = combined.splitlines()
 
         for line in lines:
             # verbose 出力: "test <name> ... ok/FAILED/ignored [(duration)]"
-            # (.+?) を使うことでスペースを含む名前（should panic, doctest等）にも対応
             m = re.match(r'^test (.+?) \.\.\. (ok|FAILED|ignored)(?:\s+\((.+?)\))?', line)
             if m:
                 status, dur_str = m.group(2), m.group(3)
                 if status == "ignored":
                     continue
                 duration = _parse_duration(dur_str) if dur_str else None
+                name = m.group(1)
+                seen.add(name)
                 results.append(TestCaseResult(
-                    name=m.group(1),
+                    name=name,
                     passed=status == "ok",
                     duration_seconds=duration,
                 ))
                 continue
 
             # example/doc-test 出力: "Testing <path> ... ok/failed/ignored [timing]"
-            # "failed" は小文字（"test" 行の "FAILED" と異なる）
-            # タイミングは "8ms 467us 700ns" 形式（括弧なし）なので duration は取得しない
             m = re.match(r'^Testing (\S+) \.\.\. (ok|failed|ignored)', line)
             if m:
                 status = m.group(2)
                 if status == "ignored":
                     continue
-                results.append(TestCaseResult(
-                    name=f"example::{m.group(1)}",
-                    passed=status == "ok",
-                ))
+                name = f"example::{m.group(1)}"
+                seen.add(name)
+                results.append(TestCaseResult(name=name, passed=status == "ok"))
                 continue
 
             # quiet 失敗割込み: "name --- FAILED" (progress dots 途中に挿入される)
             m = re.match(r'^(\S+) --- FAILED$', line)
             if m:
-                results.append(TestCaseResult(name=m.group(1), passed=False))
+                name = m.group(1)
+                seen.add(name)
+                results.append(TestCaseResult(name=name, passed=False))
 
-        if results:
-            return results
-
-        # quiet 出力: failures: セクションの末尾サマリーから失敗名を取得
-        # フォーマット:
-        #   failures:
-        #       test_name_1
-        #       test_name_2
-        # （stdout セクション付きの最初の failures: ではなく、末尾のサマリーを対象とする）
+        # failures: サマリーセクションから失敗名を補完する。
+        # verbose 解析で捕捉済みのものはスキップし、未捕捉のものだけ追加する。
+        # 出力に failures: ブロックが複数ある場合（stdout ダンプ付きの先頭ブロック＋末尾サマリー）、
+        # 末尾（最後の）failures: を対象とする。
         last_failures_idx = -1
         for i, line in enumerate(lines):
             if line.strip() == "failures:":
@@ -92,10 +93,12 @@ class RustAdapter(LanguageAdapter):
                 name = line.strip()
                 if not name:
                     break
-                # "---- name stdout ----" はスキップ（最初の failures: セクション内）
+                # "---- name stdout ----" が来たら stdout ダンプ付きブロックなので終了
                 if name.startswith("----"):
                     break
-                results.append(TestCaseResult(name=name, passed=False))
+                if name not in seen:
+                    seen.add(name)
+                    results.append(TestCaseResult(name=name, passed=False))
 
         return results
 

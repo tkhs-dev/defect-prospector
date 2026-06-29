@@ -158,5 +158,232 @@ def collect(
         raise SystemExit(1)
 
 
+@cli.command()
+@click.option("--tracker", default=None, help="Filter by tracker URL (prefix match)")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.pass_context
+def stats(ctx: click.Context, tracker: str | None, as_json: bool) -> None:
+    """Show statistics of the collected dataset."""
+    import json
+    import statistics
+
+    from bug_prospector.core.storage import Storage
+    from bug_prospector.core.models.record import VALID, INVALID, PATCH_FAILED, SETUP_FAILED, TIMEOUT, ERROR, SKIPPED
+
+    dataset_dir: Path = ctx.obj["dataset_dir"]
+    storage = Storage(dataset_dir)
+    records = storage.list_all()
+
+    if tracker:
+        records = [r for r in records if r.source.tracker_url.startswith(tracker)]
+
+    total = len(records)
+    if total == 0:
+        click.echo("No records found.")
+        return
+
+    # --- language breakdown ---
+    lang_counts: dict[str, int] = {}
+    for r in records:
+        lang = r.reproduction.environment.language or "unknown"
+        lang_counts[lang] = lang_counts.get(lang, 0) + 1
+
+    # --- tracker breakdown ---
+    tracker_counts: dict[str, int] = {}
+    for r in records:
+        key = r.source.tracker_url
+        tracker_counts[key] = tracker_counts.get(key, 0) + 1
+
+    # --- validation status ---
+    val_counts: dict[str, int] = {}
+    for r in records:
+        if r.validation:
+            s = r.validation.status
+        else:
+            s = SKIPPED
+        val_counts[s] = val_counts.get(s, 0) + 1
+
+    # --- fix size stats ---
+    lines_added = [r.fix.lines_added for r in records]
+    lines_deleted = [r.fix.lines_deleted for r in records]
+    changed_files = [len(r.fix.changed_files) for r in records]
+
+    def _stats(vals: list[int]) -> dict:
+        if not vals:
+            return {}
+        return {
+            "min": min(vals),
+            "max": max(vals),
+            "mean": round(sum(vals) / len(vals), 1),
+            "median": round(statistics.median(vals), 1),
+        }
+
+    # --- date range ---
+    dates = sorted(r.metadata.collected_at for r in records)
+    date_range = (dates[0].date().isoformat(), dates[-1].date().isoformat())
+
+    # --- issue age (days from created_at to closed_at) ---
+    ages = []
+    for r in records:
+        if r.source.created_at and r.source.closed_at:
+            ages.append((r.source.closed_at - r.source.created_at).days)
+
+    # --- test case stats ---
+    # validation がある全レコードを対象に集計する
+
+    # テスト実行自体の失敗内訳
+    exec_fail_counts: dict[str, int] = {}
+    for s in (PATCH_FAILED, SETUP_FAILED, TIMEOUT, ERROR):
+        n = val_counts.get(s, 0)
+        if n:
+            exec_fail_counts[s] = n
+
+    # ケース単位のデータがあるレコードで集計
+    # fixed       : buggy FAIL → fix PASS（バグ修正で直ったテスト）
+    # preexisting : buggy FAIL → fix FAIL（修正に無関係な既存失敗）
+    # regression  : buggy PASS → fix FAIL（修正で新たに壊れたテスト）
+    n_with_cases = 0
+    n_fallback = 0  # test_cases なし・全体結果のみ
+    fixed_counts: list[int] = []
+    preexisting_counts: list[int] = []
+    regression_counts: list[int] = []
+
+    for r in records:
+        v = r.validation
+        if v is None or v.fix_result is None or v.buggy_result is None:
+            continue
+        fr, br = v.fix_result, v.buggy_result
+        if fr.test_cases and br.test_cases:
+            n_with_cases += 1
+            fix_passed  = {tc.name for tc in fr.test_cases if     tc.passed}
+            fix_failed  = {tc.name for tc in fr.test_cases if not tc.passed}
+            buggy_passed = {tc.name for tc in br.test_cases if     tc.passed}
+            buggy_failed = {tc.name for tc in br.test_cases if not tc.passed}
+            fixed_counts.append(len(buggy_failed & fix_passed))
+            preexisting_counts.append(len(buggy_failed & fix_failed))
+            regression_counts.append(len(buggy_passed & fix_failed))
+        else:
+            n_fallback += 1
+
+    def _dist(vals: list[int]) -> dict[str, int]:
+        d: dict[str, int] = {}
+        for n in vals:
+            if n == 0:
+                k = "0"
+            elif n == 1:
+                k = "1"
+            elif n == 2:
+                k = "2"
+            elif n <= 5:
+                k = "3-5"
+            elif n <= 10:
+                k = "6-10"
+            else:
+                k = "11+"
+            d[k] = d.get(k, 0) + 1
+        return d
+
+    test_stats = {
+        "with_case_data": n_with_cases,
+        "fallback_overall_only": n_fallback,
+        "exec_failures": exec_fail_counts,
+        "fixed_per_bug":       _stats(fixed_counts),
+        "preexisting_per_bug": _stats(preexisting_counts),
+        "regression_per_bug":  _stats(regression_counts),
+        "fixed_distribution":       _dist(fixed_counts),
+        "preexisting_distribution": _dist(preexisting_counts),
+    }
+
+    result = {
+        "total": total,
+        "date_range": {"from": date_range[0], "to": date_range[1]},
+        "by_language": lang_counts,
+        "by_tracker": tracker_counts,
+        "validation": val_counts,
+        "fix_lines_added": _stats(lines_added),
+        "fix_lines_deleted": _stats(lines_deleted),
+        "changed_files_per_bug": _stats(changed_files),
+        "issue_age_days": _stats(ages) if ages else {},
+        "test_cases": test_stats,
+    }
+
+    if as_json:
+        click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
+    def _bar(counts: dict[str, int], total: int, width: int = 20) -> None:
+        for key, n in sorted(counts.items(), key=lambda x: -x[1]):
+            pct = n / total * 100
+            bar = "#" * round(pct / 100 * width)
+            click.echo(f"  {key:<35}  {n:>5}  ({pct:5.1f}%)  {bar}")
+
+    def _fmt_stats(s: dict) -> str:
+        if not s:
+            return "n/a"
+        return f"min={s['min']}  max={s['max']}  mean={s['mean']}  median={s['median']}"
+
+    click.echo(f"\n{'='*60}")
+    click.echo(f"  Dataset statistics  (total: {total})")
+    click.echo(f"  Collected: {date_range[0]} to {date_range[1]}")
+    click.echo(f"{'='*60}")
+
+    click.echo("\n[Language]")
+    _bar(lang_counts, total)
+
+    click.echo("\n[Tracker]")
+    _bar(tracker_counts, total)
+
+    click.echo("\n[Validation status]")
+    _bar(val_counts, total)
+
+    click.echo("\n[Fix size]")
+    click.echo(f"  lines added   : {_fmt_stats(_stats(lines_added))}")
+    click.echo(f"  lines deleted : {_fmt_stats(_stats(lines_deleted))}")
+    click.echo(f"  changed files : {_fmt_stats(_stats(changed_files))}")
+
+    if ages:
+        click.echo("\n[Issue age (days to close)]")
+        click.echo(f"  {_fmt_stats(_stats(ages))}")
+
+    n_with_cases = test_stats["with_case_data"]
+    n_fallback   = test_stats["fallback_overall_only"]
+    exec_fails   = test_stats["exec_failures"]
+
+    click.echo(f"\n[Test cases]")
+    click.echo(f"  with per-case data   : {n_with_cases}")
+    click.echo(f"  fallback (overall)   : {n_fallback}")
+    if exec_fails:
+        click.echo("  execution failures:")
+        for s, n in sorted(exec_fails.items(), key=lambda x: -x[1]):
+            click.echo(f"    {s:<20} {n}")
+
+    def _dist_bar(dist: dict[str, int], base: int, label: str) -> None:
+        if not dist:
+            return
+        click.echo(f"  {label}:")
+        for bucket in ["0", "1", "2", "3-5", "6-10", "11+"]:
+            n = dist.get(bucket, 0)
+            if n == 0:
+                continue
+            pct = n / base * 100
+            bar = "#" * round(pct / 100 * 20)
+            click.echo(f"    {bucket:>5}  {n:>5}  ({pct:5.1f}%)  {bar}")
+
+    if n_with_cases:
+        click.echo(f"\n  [buggy FAIL → fix PASS  (bug-fixing tests)]")
+        click.echo(f"    {_fmt_stats(test_stats['fixed_per_bug'])}")
+        _dist_bar(test_stats["fixed_distribution"], n_with_cases, "distribution")
+
+        click.echo(f"\n  [FAIL in both states  (pre-existing failures)]")
+        click.echo(f"    {_fmt_stats(test_stats['preexisting_per_bug'])}")
+        _dist_bar(test_stats["preexisting_distribution"], n_with_cases, "distribution")
+
+        if any(v > 0 for v in test_stats["regression_per_bug"].values()):
+            click.echo(f"\n  [buggy PASS → fix FAIL  (regressions)]")
+            click.echo(f"    {_fmt_stats(test_stats['regression_per_bug'])}")
+
+    click.echo("")
+
+
 if __name__ == "__main__":
     cli()
