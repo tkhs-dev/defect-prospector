@@ -22,7 +22,7 @@ search:
   require_pr: true
 
 language:
-  type: python
+  type: rust
   # テストファイルと判定するパターン（リバースパッチ時のソース/テスト分割に使用）
   test_patterns:
     - "tests/**"
