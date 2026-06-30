@@ -260,8 +260,8 @@ class Validator:
             return TestRunResult(
                 passed=r.returncode == 0,
                 exit_code=r.returncode,
-                stdout=r.stdout[-4096:],
-                stderr=r.stderr[-2048:],
+                stdout=r.stdout,
+                stderr=r.stderr,
                 duration_seconds=duration,
             )
         except subprocess.TimeoutExpired:
