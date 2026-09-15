@@ -53,7 +53,8 @@ coverage:
   # true にすると、バグ状態（逆パッチ適用後）のワークツリーで
   # pytest-cov（coverage.py）を実行し、diff coverage とプロジェクト全体の
   # カバレッジ率を記録する。
-  enabled: true
+  # いったん無効化中（収集の速度・安定性を優先。必要になったら true に戻す）
+  enabled: false
   tool: coverage.py
   command: "pytest --cov=flask --cov-report=xml:coverage.xml -q"
   # report_path は省略時 "coverage.xml"（リポジトリルート）が使われる

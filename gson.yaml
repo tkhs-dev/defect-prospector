@@ -59,7 +59,8 @@ coverage:
   # JaCoCo を ad hoc 実行し、diff coverage とプロジェクト全体の
   # カバレッジ率を記録する。マルチモジュール構成のため command/report_path は
   # gson サブモジュールに明示的に絞り込む。
-  enabled: true
+  # いったん無効化中（収集の速度・安定性を優先。必要になったら true に戻す）
+  enabled: false
   tool: jacoco
   command: "mvn org.jacoco:jacoco-maven-plugin:0.8.12:prepare-agent test org.jacoco:jacoco-maven-plugin:0.8.12:report -pl gson -am -B"
   report_path: "gson/target/site/jacoco/jacoco.xml"
