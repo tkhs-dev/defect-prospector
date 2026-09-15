@@ -1,0 +1,60 @@
+# プロジェクト設定サンプル
+# 使い方: bp collect --project flask.yaml
+
+project_id: "pallets-flask"
+
+repo:
+  url: https://github.com/pallets/flask
+  vcs_type: git
+
+tracker:
+  type: github
+  url: https://github.com/pallets/flask
+  auth:
+    token: ${GITHUB_TOKEN}
+
+search:
+  labels: [bug]
+  state: closed
+  limit: 500
+  since: "2011-01-01"
+  # true: マージ済みPRが紐付いていないIssueはスキップ
+  require_pr: true
+
+language:
+  type: python
+  # テストファイルと判定するパターン（リバースパッチ時のソース/テスト分割に使用）
+  test_patterns:
+    - "tests/**"
+  # テスト実行前の環境セットアップ（worktree 内で一度だけ実行）
+  # pyproject.toml の [dependency-groups] tests は pip の extras 構文では
+  # インストールできないため、必要なパッケージを直接指定する。
+  setup_commands:
+    - "pip install -e . --quiet"
+    - "pip install pytest pytest-cov asgiref python-dotenv --quiet"
+  # テスト実行コマンド
+  test_command: "pytest -q"
+  # タイムアウト（秒）
+  test_timeout: 120
+
+validation:
+  # true にするとリバースパッチ戦略でテスト検証を行い
+  # FAIL→PASS が確認されたものだけ "valid" として記録する
+  enabled: true
+  # reverse_patch_source: ソースファイルのみ逆パッチ（fixで追加されたテストは保持）
+  # reverse_patch_all:    全ファイルを逆パッチ
+  strategy: reverse_patch_source
+  # true にすると dataset/test-logs/{project_id}/ にテスト出力を保存する
+  save_test_output: true
+  # true にすると失敗したテストケース名をログに出力する
+  show_failed_tests: true
+
+coverage:
+  # true にすると、バグ状態（逆パッチ適用後）のワークツリーで
+  # pytest-cov（coverage.py）を実行し、diff coverage とプロジェクト全体の
+  # カバレッジ率を記録する。
+  enabled: true
+  tool: coverage.py
+  command: "pytest --cov=flask --cov-report=xml:coverage.xml -q"
+  # report_path は省略時 "coverage.xml"（リポジトリルート）が使われる
+  timeout: 600

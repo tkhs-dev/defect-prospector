@@ -210,7 +210,7 @@ class LanguageAdapter(ABC):
 
 ## 4.2 CoverageAdapter
 
-Rust/Javaのテスト厳格さ比較（[rust-vs-java-testing.md](rust-vs-java-testing.md)）のために追加した、
+Rust/Java/Pythonのテスト厳格さ比較（[test-rigor-comparison.md](test-rigor-comparison.md)）のために追加した、
 言語ごとのカバレッジ計測ツールを抽象化するアダプタ。`LanguageAdapter` とは独立したカテゴリで、
 `ProjectConfig.coverage.enabled=true` の場合のみ `Validator` から利用される。
 
@@ -237,8 +237,9 @@ class CoverageAdapter(ABC):
 
 | クラス | ファイル | 対応言語 / ツール |
 |---|---|---|
-| `CargoLlvmCovAdapter` | `adapters/coverage/rust.py` | Rust / cargo-llvm-cov（Cobertura形式出力） |
-| `JacocoAdapter` | `adapters/coverage/java.py` | Java / JaCoCo（Maven: アドホック起動 / Gradle: `jacocoTestReport`） |
+| `CargoLlvmCovAdapter` | `adapters/coverage/rust.py` | Rust / cargo-llvm-cov（`--workspace --cobertura` 形式出力。`--workspace` を付けないとルートパッケージしか計装されないため必須） |
+| `JacocoAdapter` | `adapters/coverage/java.py` | Java / JaCoCo（Maven: フルGAV座標でのアドホック起動 / Gradle: `jacocoTestReport`、プラグイン未適用だと失敗する） |
+| `CoveragePyAdapter` | `adapters/coverage/python.py` | Python / coverage.py（pytest-cov経由。`coverage xml` の出力はCobertura互換のため `cobertura.py` のパーサをそのまま再利用） |
 
 レポートのパース処理（Cobertura/JaCoCoそれぞれのXML形式）は `adapters/coverage/cobertura.py` /
 `adapters/coverage/jacoco.py` に分離してあり、`ParsedCoverage`（ファイル別・行別のカバー有無と

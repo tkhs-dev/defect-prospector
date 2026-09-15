@@ -1,11 +1,17 @@
 # 設計書一覧 — defect-prospector
 
+実際の使い方（インストール・CLI・設定ファイル・パイプラインの挙動）は
+[../README.md](../README.md) を一次情報として参照すること。以下は設計時点の
+ドキュメント群で、一部は実装と差異がある（各ファイルの注記を参照）。
+
 | ドキュメント | 概要 |
 |---|---|
-| [requirements.md](requirements.md) | 機能要求・非機能要求の定義 |
-| [architecture.md](architecture.md) | システム全体構成・レイヤー設計・データフロー |
+| [requirements.md](requirements.md) | 機能要求・非機能要求の定義（設計初期のもの） |
+| [architecture.md](architecture.md) | システム全体構成・レイヤー設計・データフロー（設計初期のもの。パッケージ構成は実装と一部異なる） |
 | [data-schema.md](data-schema.md) | BugRecordのデータモデル定義・ストレージ形式 |
-| [adapter-interface.md](adapter-interface.md) | VCS / IssueTracker / Language アダプタのABCと拡張方法 |
-| [cli-spec.md](cli-spec.md) | CLIコマンド仕様（`bp collect` / `checkout` 等） |
-| [test-generation.md](test-generation.md) | LLMによるテスト自動生成の設計（生成トリガー・既存テストとの関係・検証パイプライン） |
-| [rust-vs-java-testing.md](rust-vs-java-testing.md) | Rust/Javaのテスト厳格さ比較の実験設計・対象プロジェクト・実行手順 |
+| [adapter-interface.md](adapter-interface.md) | VCS / IssueTracker / Language / Coverage アダプタのABCと拡張方法 |
+| [cli-spec.md](cli-spec.md) | CLIコマンド仕様（設計初期のもの。末尾に実装との差分注記あり） |
+| [test-rigor-comparison.md](test-rigor-comparison.md) | Rust/Java/Pythonのテスト厳密さ比較の実験設計・対象プロジェクトの選定理由・実行手順 |
+
+> `test-generation.md`（LLMによるテスト自動生成の設計）は計画段階で言及されて
+> いたが未実装のため、索引からは削除している。

@@ -42,7 +42,7 @@ validation:
   # reverse_patch_all:    全ファイルを逆パッチ
   strategy: reverse_patch_source
   # true にすると dataset/test-logs/{project_id}/ にテスト出力を保存する
-  save_test_output: false
+  save_test_output: true
   # true にすると失敗したテストケース名をログに出力する
   show_failed_tests: true
 
@@ -54,5 +54,8 @@ coverage:
   enabled: true
   tool: cargo-llvm-cov
   # command / report_path は省略時、言語アダプタのデフォルトを使う
-  # (command: "cargo llvm-cov --cobertura --output-path target/llvm-cov-cobertura.xml")
-  timeout: 600
+  # (command: "cargo llvm-cov --workspace --cobertura --output-path target/llvm-cov-cobertura.xml")
+  # 永続worktreeは各Issue処理後に target/ ごと git clean -fd されるため、
+  # 毎回ワークスペース全体をコンパイルし直すことになる。dev-dependencies
+  # （benchmark等）を含めると数分かかることがあるため長めに設定。
+  timeout: 1200

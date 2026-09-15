@@ -311,9 +311,10 @@ FAIL→PASS集計等）。`bp stats [--tracker PREFIX] [--json]`。
 
 ### 11.2 compare
 
-[rust-vs-java-testing.md](rust-vs-java-testing.md) のために追加。`reproduction.environment.language`
-でグルーピングし、PRのテスト変更率・diff coverage・全体カバレッジ率等を言語間で比較する。
+[test-rigor-comparison.md](test-rigor-comparison.md) のために追加。`reproduction.environment.language`
+でグルーピングし、PRのテスト変更率・テスト重視度（`functions_changed`/`tests_added`等）・
+diff coverage・全体カバレッジ率等を言語間で比較する。
 
 ```
-bp compare [--languages rust,java] [--json]
+bp compare [--languages rust,java,python] [--json]
 ```

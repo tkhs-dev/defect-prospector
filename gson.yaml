@@ -1,0 +1,66 @@
+# プロジェクト設定サンプル
+# 使い方: bp collect --project gson.yaml
+#
+# gson はマルチモジュールMavenプロジェクト（本体は gson/ サブモジュール、他に
+# extras/proto/metrics/test-jpms 等の補助モジュールがある）。ビルド・テスト・
+# カバレッジ計測は本体モジュールである gson/ に -pl で絞り込む。
+
+project_id: "google-gson"
+
+repo:
+  url: https://github.com/google/gson
+  vcs_type: git
+
+tracker:
+  type: github
+  url: https://github.com/google/gson
+  auth:
+    token: ${GITHUB_TOKEN}
+
+search:
+  labels: [bug]
+  state: closed
+  limit: 500
+  since: "2011-01-01"
+  # true: マージ済みPRが紐付いていないIssueはスキップ
+  require_pr: true
+
+language:
+  type: java
+  # テストファイルと判定するパターン（リバースパッチ時のソース/テスト分割に使用）
+  test_patterns:
+    - "gson/src/test/**"
+    - "*Test.java"
+    - "Test*.java"
+    - "*Tests.java"
+  # テスト実行前の環境セットアップ（worktree 内で一度だけ実行）
+  # -pl gson -am: 本体モジュール gson とその依存モジュールのみビルド
+  setup_commands:
+    - "mvn -q -B -pl gson -am compile test-compile"
+  # テスト実行コマンド（本体モジュールのみ）
+  test_command: "mvn test -pl gson -am -B"
+  # タイムアウト（秒）
+  test_timeout: 300
+
+validation:
+  # true にするとリバースパッチ戦略でテスト検証を行い
+  # FAIL→PASS が確認されたものだけ "valid" として記録する
+  enabled: true
+  # reverse_patch_source: ソースファイルのみ逆パッチ（fixで追加されたテストは保持）
+  # reverse_patch_all:    全ファイルを逆パッチ
+  strategy: reverse_patch_source
+  # true にすると dataset/test-logs/{project_id}/ にテスト出力を保存する
+  save_test_output: true
+  # true にすると失敗したテストケース名をログに出力する
+  show_failed_tests: true
+
+coverage:
+  # true にすると、バグ状態（逆パッチ適用後）のワークツリーで
+  # JaCoCo を ad hoc 実行し、diff coverage とプロジェクト全体の
+  # カバレッジ率を記録する。マルチモジュール構成のため command/report_path は
+  # gson サブモジュールに明示的に絞り込む。
+  enabled: true
+  tool: jacoco
+  command: "mvn org.jacoco:jacoco-maven-plugin:0.8.12:prepare-agent test org.jacoco:jacoco-maven-plugin:0.8.12:report -pl gson -am -B"
+  report_path: "gson/target/site/jacoco/jacoco.xml"
+  timeout: 600
