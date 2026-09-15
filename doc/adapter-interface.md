@@ -198,8 +198,52 @@ class LanguageAdapter(ABC):
 
 | クラス | ファイル | 対応言語 |
 |---|---|---|
+| `RustAdapter` | `adapters/language/rust.py` | Rust（Cargo.toml） |
 | `PythonAdapter` | `adapters/language/python.py` | Python（pyproject.toml / requirements.txt / setup.py） |
-| `JavaAdapter` | `adapters/language/java.py` | Java（pom.xml / build.gradle） |
+| `JavaAdapter` | `adapters/language/java.py` | Java（pom.xml / build.gradle / build.gradle.kts） |
+
+実際の `LanguageAdapter`（`bug_prospector/adapters/language/base.py`）は上記の設計案とは異なり、
+`default_test_patterns` / `default_test_command` / `default_setup_commands` / `parse_test_output`
+の4メソッドで構成される（テスト実行結果のパースまでを担う。詳細は各実装ファイルとテストを参照）。
+
+---
+
+## 4.2 CoverageAdapter
+
+Rust/Javaのテスト厳格さ比較（[rust-vs-java-testing.md](rust-vs-java-testing.md)）のために追加した、
+言語ごとのカバレッジ計測ツールを抽象化するアダプタ。`LanguageAdapter` とは独立したカテゴリで、
+`ProjectConfig.coverage.enabled=true` の場合のみ `Validator` から利用される。
+
+```python
+# bug_prospector/adapters/coverage/base.py
+class CoverageAdapter(ABC):
+
+    @property
+    @abstractmethod
+    def tool_name(self) -> str: ...
+
+    @abstractmethod
+    def default_command(self, repo_path: Path) -> str:
+        """カバレッジ計測込みでテストスイートを実行するコマンドを返す"""
+
+    @abstractmethod
+    def default_report_path(self, repo_path: Path) -> Path:
+        """コマンド実行後に生成されるレポートファイルの絶対パスを返す"""
+
+    @abstractmethod
+    def parse_report(self, report_path: Path) -> ParsedCoverage:
+        """カバレッジレポートを解析する"""
+```
+
+| クラス | ファイル | 対応言語 / ツール |
+|---|---|---|
+| `CargoLlvmCovAdapter` | `adapters/coverage/rust.py` | Rust / cargo-llvm-cov（Cobertura形式出力） |
+| `JacocoAdapter` | `adapters/coverage/java.py` | Java / JaCoCo（Maven: アドホック起動 / Gradle: `jacocoTestReport`） |
+
+レポートのパース処理（Cobertura/JaCoCoそれぞれのXML形式）は `adapters/coverage/cobertura.py` /
+`adapters/coverage/jacoco.py` に分離してあり、`ParsedCoverage`（ファイル別・行別のカバー有無と
+プロジェクト全体の行/分岐カバレッジ率）を返す。diff coverage（修正差分が触れた行のカバー率）の算出は
+`core/coverage.py` の `CoverageRunner` が担う。
 
 ---
 

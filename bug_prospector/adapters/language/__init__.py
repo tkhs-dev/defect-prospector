@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from .base import LanguageAdapter
+from .java import JavaAdapter
 from .python import PythonAdapter
 from .rust import RustAdapter
 
 _ADAPTERS: list[LanguageAdapter] = [
     RustAdapter(),
     PythonAdapter(),
+    JavaAdapter(),
 ]
 
 _BY_NAME: dict[str, LanguageAdapter] = {a.language_name: a for a in _ADAPTERS}

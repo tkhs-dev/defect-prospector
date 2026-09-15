@@ -57,6 +57,20 @@ class ValidationConfig:
     show_failed_tests: bool = False
 
 
+@dataclass
+class CoverageConfig:
+    """カバレッジ計測設定。validation.enabled=true の場合のみ有効。"""
+    enabled: bool = False
+    # 参考情報。空なら言語アダプタのデフォルトツールを使う（rust: cargo-llvm-cov, java: jacoco）
+    tool: str = ""
+    # 空なら言語アダプタのデフォルトコマンドを使う
+    command: str = ""
+    # レポートファイルの相対パス。空なら言語アダプタのデフォルトパスを使う
+    # （マルチモジュールJavaプロジェクト等、デフォルトが合わない場合に上書きする）
+    report_path: str = ""
+    timeout: int = 600
+
+
 # ---------------------------------------------------------------------------
 # Top-level project config
 # ---------------------------------------------------------------------------
@@ -73,6 +87,7 @@ class ProjectConfig:
     search: SearchConfig = field(default_factory=SearchConfig)
     language: LanguageConfig = field(default_factory=LanguageConfig)
     validation: ValidationConfig = field(default_factory=ValidationConfig)
+    coverage: CoverageConfig = field(default_factory=CoverageConfig)
 
     @classmethod
     def from_file(cls, path: Path) -> ProjectConfig:
@@ -88,6 +103,7 @@ class ProjectConfig:
         search_d = d.get("search", {})
         lang_d = d.get("language", {})
         val_d = d.get("validation", {})
+        cov_d = d.get("coverage", {})
 
         search = SearchConfig(
             labels=search_d.get("labels", ["bug"]),
@@ -110,6 +126,13 @@ class ProjectConfig:
             save_test_output=val_d.get("save_test_output", False),
             show_failed_tests=val_d.get("show_failed_tests", False),
         )
+        coverage = CoverageConfig(
+            enabled=cov_d.get("enabled", False),
+            tool=cov_d.get("tool", ""),
+            command=cov_d.get("command", ""),
+            report_path=cov_d.get("report_path", ""),
+            timeout=cov_d.get("timeout", 600),
+        )
 
         tracker_d = d.get("tracker", {})
         return cls(
@@ -122,6 +145,7 @@ class ProjectConfig:
             search=search,
             language=language,
             validation=validation,
+            coverage=coverage,
         )
 
 

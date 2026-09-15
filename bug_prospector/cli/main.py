@@ -370,7 +370,7 @@ def stats(ctx: click.Context, tracker: str | None, as_json: bool) -> None:
             click.echo(f"    {bucket:>5}  {n:>5}  ({pct:5.1f}%)  {bar}")
 
     if n_with_cases:
-        click.echo(f"\n  [buggy FAIL → fix PASS  (bug-fixing tests)]")
+        click.echo(f"\n  [buggy FAIL -> fix PASS  (bug-fixing tests)]")
         click.echo(f"    {_fmt_stats(test_stats['fixed_per_bug'])}")
         _dist_bar(test_stats["fixed_distribution"], n_with_cases, "distribution")
 
@@ -379,8 +379,148 @@ def stats(ctx: click.Context, tracker: str | None, as_json: bool) -> None:
         _dist_bar(test_stats["preexisting_distribution"], n_with_cases, "distribution")
 
         if any(v > 0 for v in test_stats["regression_per_bug"].values()):
-            click.echo(f"\n  [buggy PASS → fix FAIL  (regressions)]")
+            click.echo(f"\n  [buggy PASS -> fix FAIL  (regressions)]")
             click.echo(f"    {_fmt_stats(test_stats['regression_per_bug'])}")
+
+    click.echo("")
+
+
+@cli.command()
+@click.option(
+    "--languages", default="rust,java",
+    help="Comma-separated languages to compare (default: rust,java)",
+)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.pass_context
+def compare(ctx: click.Context, languages: str, as_json: bool) -> None:
+    """Compare testing-quality metrics across languages (e.g. rust vs java).
+
+    Metrics per language:
+      - PR test-change rate: % of fix PRs that touch a test file at all
+      - test lines added / test files changed per PR
+      - diff coverage: % of the bug's changed lines that existing tests
+        (at the buggy commit) actually exercised - requires coverage.enabled
+      - overall line/branch coverage of the project at the buggy commit
+
+    \b
+    Example:
+      bp compare
+      bp compare --languages rust,java --json
+    """
+    import json
+    import statistics
+
+    from bug_prospector.adapters.language import get_language_adapter
+    from bug_prospector.core.models.record import MEASURED
+    from bug_prospector.core.patch import is_test_file, split_diff
+    from bug_prospector.core.storage import Storage
+
+    dataset_dir: Path = ctx.obj["dataset_dir"]
+    storage = Storage(dataset_dir)
+    all_records = storage.list_all()
+
+    langs = [l.strip() for l in languages.split(",") if l.strip()]
+
+    def _stats(vals: list[float]) -> dict:
+        if not vals:
+            return {}
+        return {
+            "n": len(vals),
+            "mean": round(sum(vals) / len(vals), 3),
+            "median": round(statistics.median(vals), 3),
+            "min": round(min(vals), 3),
+            "max": round(max(vals), 3),
+        }
+
+    report: dict[str, dict] = {}
+
+    for lang in langs:
+        records = [
+            r for r in all_records
+            if (r.reproduction.environment.language or "").lower() == lang.lower()
+        ]
+        n = len(records)
+        adapter = get_language_adapter(lang)
+        patterns = adapter.default_test_patterns() if adapter else []
+
+        touched_tests = 0
+        test_lines_added: list[float] = []
+        test_files_changed: list[float] = []
+        for r in records:
+            _, test_diff = split_diff(r.fix.diff, patterns)
+            n_lines = sum(
+                1 for line in test_diff.splitlines()
+                if line.startswith("+") and not line.startswith("+++")
+            )
+            n_files = sum(1 for f in r.fix.changed_files if is_test_file(f, patterns))
+            if n_files > 0:
+                touched_tests += 1
+            test_lines_added.append(n_lines)
+            test_files_changed.append(n_files)
+
+        cov_records = [
+            r for r in records
+            if r.validation and r.validation.coverage and r.validation.coverage.status == MEASURED
+        ]
+        diff_cov = [
+            r.validation.coverage.diff_coverage_rate for r in cov_records
+            if r.validation.coverage.diff_coverage_rate is not None
+        ]
+        overall_line = [
+            r.validation.coverage.overall_line_rate for r in cov_records
+            if r.validation.coverage.overall_line_rate is not None
+        ]
+        overall_branch = [
+            r.validation.coverage.overall_branch_rate for r in cov_records
+            if r.validation.coverage.overall_branch_rate is not None
+        ]
+        zero_diff_cov = sum(1 for v in diff_cov if v == 0.0)
+
+        report[lang] = {
+            "total_bugs": n,
+            "pr_test_change_rate": round(touched_tests / n, 3) if n else None,
+            "test_lines_added_per_pr": _stats(test_lines_added),
+            "test_files_changed_per_pr": _stats(test_files_changed),
+            "coverage": {
+                "n_measured": len(cov_records),
+                "diff_coverage_rate": _stats(diff_cov),
+                "diff_coverage_zero_rate": round(zero_diff_cov / len(diff_cov), 3) if diff_cov else None,
+                "overall_line_rate": _stats(overall_line),
+                "overall_branch_rate": _stats(overall_branch),
+            },
+        }
+
+    if as_json:
+        click.echo(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+
+    click.echo(f"\n{'='*72}")
+    click.echo(f"  Language comparison: {' vs '.join(langs)}")
+    click.echo(f"{'='*72}")
+
+    for lang in langs:
+        d = report[lang]
+        click.echo(f"\n[{lang}]  (total bugs: {d['total_bugs']})")
+        if d["total_bugs"] == 0:
+            click.echo("  no data collected yet")
+            continue
+        pct = d["pr_test_change_rate"]
+        click.echo(f"  PR touches a test file : {pct*100:5.1f}%" if pct is not None else "  n/a")
+        tla = d["test_lines_added_per_pr"]
+        if tla:
+            click.echo(f"  test lines added/PR    : mean={tla['mean']}  median={tla['median']}  max={tla['max']}")
+        cov = d["coverage"]
+        click.echo(f"  coverage measured      : {cov['n_measured']} bugs")
+        if cov["diff_coverage_rate"]:
+            dc = cov["diff_coverage_rate"]
+            click.echo(
+                f"  diff coverage (buggy lines covered by existing tests): "
+                f"mean={dc['mean']*100:.1f}%  median={dc['median']*100:.1f}%"
+            )
+            click.echo(f"    -> 0% diff coverage (bug in wholly untested code): {cov['diff_coverage_zero_rate']*100:.1f}%")
+        if cov["overall_line_rate"]:
+            olr = cov["overall_line_rate"]
+            click.echo(f"  overall line coverage  : mean={olr['mean']*100:.1f}%  median={olr['median']*100:.1f}%")
 
     click.echo("")
 

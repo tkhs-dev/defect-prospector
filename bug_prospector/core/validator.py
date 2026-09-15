@@ -22,8 +22,10 @@ from pathlib import Path
 
 import git
 
+from ..adapters.coverage import get_coverage_adapter
 from ..adapters.language import get_language_adapter
-from ..config import LanguageConfig, ValidationConfig
+from ..config import CoverageConfig, LanguageConfig, ValidationConfig
+from .coverage import CoverageRunner
 from .models.record import (
     PATCH_FAILED,
     SETUP_FAILED,
@@ -66,6 +68,7 @@ class Validator:
         worktree_path: Path | None = None,
         patch_dir: Path | None = None,
         test_log_dir: Path | None = None,
+        coverage_config: CoverageConfig | None = None,
     ) -> None:
         self._lang = lang_config
         self._val = val_config
@@ -74,6 +77,10 @@ class Validator:
         self._test_log_dir = test_log_dir     # テスト出力保存先; None=保存しない
         self._active_worktree: Path | None = None
         self._worktree_repo: git.Repo | None = None
+        self._coverage_runner = CoverageRunner(
+            adapter=get_coverage_adapter(lang_config.type),
+            config=coverage_config or CoverageConfig(),
+        )
 
     def close(self) -> None:
         """永続的な worktree を削除する。run_project の終了時に呼ぶ。"""
@@ -192,10 +199,16 @@ class Validator:
                     logger.info(f"    [buggy FAIL] {name}")
 
             is_valid = _is_valid(fix_result, buggy_result)
+
+            # --- カバレッジ計測（バグ状態＝逆パッチ適用後のワークツリーで実行） ---
+            # 修正差分が触れた行を、既存テストが buggy 時点でどれだけカバーしていたかを見る。
+            coverage_result = self._coverage_runner.measure(worktree, unified_diff)
+
             return ValidationResult(
                 status=_VALID if is_valid else _INVALID,
                 fix_result=fix_result,
                 buggy_result=buggy_result,
+                coverage=coverage_result,
             )
 
         except Exception as e:

@@ -45,3 +45,14 @@ validation:
   save_test_output: false
   # true にすると失敗したテストケース名をログに出力する
   show_failed_tests: true
+
+coverage:
+  # true にすると、バグ状態（逆パッチ適用後）のワークツリーで
+  # cargo-llvm-cov を実行し、修正差分が触れた行の diff coverage と
+  # プロジェクト全体のカバレッジ率を記録する（Rust/Java比較用、doc/rust-vs-java-testing.md 参照）。
+  # 事前に `cargo install cargo-llvm-cov` が必要。
+  enabled: true
+  tool: cargo-llvm-cov
+  # command / report_path は省略時、言語アダプタのデフォルトを使う
+  # (command: "cargo llvm-cov --cobertura --output-path target/llvm-cov-cobertura.xml")
+  timeout: 600

@@ -72,7 +72,11 @@ class Collector:
         worktree_path = self._dataset_dir / "worktrees" / repo_slug_flat if val.enabled else None
         patch_dir = self._dataset_dir / "patches" / project.project_id if val.enabled else None
         test_log_dir = self._dataset_dir / "test-logs" / project.project_id if val.enabled and val.save_test_output else None
-        validator = Validator(project.language, val, worktree_path=worktree_path, patch_dir=patch_dir, test_log_dir=test_log_dir)
+        validator = Validator(
+            project.language, val,
+            worktree_path=worktree_path, patch_dir=patch_dir, test_log_dir=test_log_dir,
+            coverage_config=project.coverage,
+        )
 
         if not dry_run:
             vcs.ensure_repo(project.repo_url, local_repo)

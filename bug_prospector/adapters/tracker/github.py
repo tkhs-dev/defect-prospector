@@ -35,7 +35,7 @@ class GitHubAdapter(IssueTrackerAdapter):
 
     def search_bugs(self, query: IssueQuery) -> list[IssueInfo]:
         slug = self.parse_slug(query.repo_url)
-        label_terms = " ".join(f"label:{l}" for l in (query.labels or ["bug"]))
+        label_terms = " ".join(f"label:{_quote_label(l)}" for l in (query.labels or ["bug"]))
         since_term = f" created:>={query.since.strftime('%Y-%m-%d')}" if query.since else ""
         until_term = f" created:<={query.until.strftime('%Y-%m-%d')}" if query.until else ""
         linked_pr_term = " linked:pr" if query.linked_pr else ""
@@ -184,6 +184,14 @@ class GitHubAdapter(IssueTrackerAdapter):
         if not m:
             raise ValueError(f"Invalid GitHub URL: {url}")
         return m.group(1)
+
+
+def _quote_label(label: str) -> str:
+    """GitHub Issue検索の label: 修飾子はスペースを含む値をダブルクォートで囲む必要がある。"""
+    if re.search(r'\s', label):
+        escaped = label.replace('"', '\\"')
+        return f'"{escaped}"'
+    return label
 
 
 def _user(u) -> UserInfo:

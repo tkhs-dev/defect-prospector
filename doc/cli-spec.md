@@ -296,3 +296,24 @@ bp config init --output ~/my-bp.yaml  # 指定パスに生成
 | 3 | 認証エラー |
 | 4 | 収集エラー（一部失敗） |
 | 10 | リソースが見つからない（`info` / `checkout`でバグIDが存在しない） |
+
+---
+
+## 11. 実装済みの拡張コマンド（本仕様書との差分）
+
+本仕様書は設計時点のものであり、`list` / `info` / `checkout` / `export` / `config init` は未実装。
+一方、実装側では以下のコマンドが本仕様書に無い形で追加されている。
+
+### 11.1 stats
+
+収集済みデータセットの統計情報を表示する（言語・トラッカー別件数、fixサイズ、テストケース単位の
+FAIL→PASS集計等）。`bp stats [--tracker PREFIX] [--json]`。
+
+### 11.2 compare
+
+[rust-vs-java-testing.md](rust-vs-java-testing.md) のために追加。`reproduction.environment.language`
+でグルーピングし、PRのテスト変更率・diff coverage・全体カバレッジ率等を言語間で比較する。
+
+```
+bp compare [--languages rust,java] [--json]
+```
