@@ -167,8 +167,10 @@ def stats(ctx: click.Context, tracker: str | None, as_json: bool) -> None:
     import json
     import statistics
 
+    from bug_prospector.adapters.language import get_language_adapter
     from bug_prospector.core.storage import Storage
     from bug_prospector.core.models.record import VALID, INVALID, PATCH_FAILED, SETUP_FAILED, TIMEOUT, ERROR, SKIPPED
+    from bug_prospector.core.test_effort import compute as compute_test_effort
 
     dataset_dir: Path = ctx.obj["dataset_dir"]
     storage = Storage(dataset_dir)
@@ -207,6 +209,28 @@ def stats(ctx: click.Context, tracker: str | None, as_json: bool) -> None:
     lines_added = [r.fix.lines_added for r in records]
     lines_deleted = [r.fix.lines_deleted for r in records]
     changed_files = [len(r.fix.changed_files) for r in records]
+
+    # --- test discipline (test-driven fix-correctness effort) ---
+    # 「修正の正当性をテストで保証することをどれだけ重視しているか」を示す指標:
+    # 差分が触れた関数数・新規追加テスト数・その比率を言語アダプタのテストパターンを
+    # 使って diff から近似する。
+    _patterns_cache: dict[str, list[str]] = {}
+    functions_changed: list[int] = []
+    tests_added: list[int] = []
+    tests_added_per_function: list[float] = []
+    prs_with_new_tests = 0
+    for r in records:
+        lang = r.reproduction.environment.language or ""
+        if lang not in _patterns_cache:
+            adapter = get_language_adapter(lang)
+            _patterns_cache[lang] = adapter.default_test_patterns() if adapter else []
+        effort = compute_test_effort(r.fix.diff, _patterns_cache[lang], lang)
+        functions_changed.append(effort.functions_changed)
+        tests_added.append(effort.tests_added)
+        if effort.tests_added > 0:
+            prs_with_new_tests += 1
+        if effort.tests_added_per_function is not None:
+            tests_added_per_function.append(effort.tests_added_per_function)
 
     def _stats(vals: list[int]) -> dict:
         if not vals:
@@ -305,6 +329,12 @@ def stats(ctx: click.Context, tracker: str | None, as_json: bool) -> None:
         "changed_files_per_bug": _stats(changed_files),
         "issue_age_days": _stats(ages) if ages else {},
         "test_cases": test_stats,
+        "test_discipline": {
+            "functions_changed_per_bug": _stats(functions_changed),
+            "tests_added_per_bug": _stats(tests_added),
+            "prs_with_new_tests_rate": round(prs_with_new_tests / total, 3),
+            "tests_added_per_function_changed": _stats(tests_added_per_function),
+        },
     }
 
     if as_json:
@@ -344,6 +374,14 @@ def stats(ctx: click.Context, tracker: str | None, as_json: bool) -> None:
     if ages:
         click.echo("\n[Issue age (days to close)]")
         click.echo(f"  {_fmt_stats(_stats(ages))}")
+
+    click.echo("\n[Test discipline]  (how much fixes lean on tests to prove correctness)")
+    click.echo(f"  functions changed/bug : {_fmt_stats(result['test_discipline']['functions_changed_per_bug'])}")
+    click.echo(f"  new tests added/bug   : {_fmt_stats(result['test_discipline']['tests_added_per_bug'])}")
+    click.echo(f"  bugs adding a new test: {result['test_discipline']['prs_with_new_tests_rate']*100:5.1f}%")
+    tapf = result["test_discipline"]["tests_added_per_function_changed"]
+    if tapf:
+        click.echo(f"  new tests / function changed: {_fmt_stats(tapf)}")
 
     n_with_cases = test_stats["with_case_data"]
     n_fallback   = test_stats["fallback_overall_only"]
@@ -398,6 +436,9 @@ def compare(ctx: click.Context, languages: str, as_json: bool) -> None:
     Metrics per language:
       - PR test-change rate: % of fix PRs that touch a test file at all
       - test lines added / test files changed per PR
+      - functions changed / tests added per PR, and tests-added-per-function-changed
+        - how much developers rely on new tests (vs. just editing existing ones)
+          to justify a fix, relative to how much source code the fix touched
       - diff coverage: % of the bug's changed lines that existing tests
         (at the buggy commit) actually exercised - requires coverage.enabled
       - overall line/branch coverage of the project at the buggy commit
@@ -412,8 +453,8 @@ def compare(ctx: click.Context, languages: str, as_json: bool) -> None:
 
     from bug_prospector.adapters.language import get_language_adapter
     from bug_prospector.core.models.record import MEASURED
-    from bug_prospector.core.patch import is_test_file, split_diff
     from bug_prospector.core.storage import Storage
+    from bug_prospector.core.test_effort import compute as compute_test_effort
 
     dataset_dir: Path = ctx.obj["dataset_dir"]
     storage = Storage(dataset_dir)
@@ -446,17 +487,19 @@ def compare(ctx: click.Context, languages: str, as_json: bool) -> None:
         touched_tests = 0
         test_lines_added: list[float] = []
         test_files_changed: list[float] = []
+        functions_changed: list[float] = []
+        tests_added: list[float] = []
+        tests_added_per_function: list[float] = []
         for r in records:
-            _, test_diff = split_diff(r.fix.diff, patterns)
-            n_lines = sum(
-                1 for line in test_diff.splitlines()
-                if line.startswith("+") and not line.startswith("+++")
-            )
-            n_files = sum(1 for f in r.fix.changed_files if is_test_file(f, patterns))
-            if n_files > 0:
+            effort = compute_test_effort(r.fix.diff, patterns, lang)
+            if effort.test_files_changed > 0:
                 touched_tests += 1
-            test_lines_added.append(n_lines)
-            test_files_changed.append(n_files)
+            test_lines_added.append(effort.test_lines_added)
+            test_files_changed.append(effort.test_files_changed)
+            functions_changed.append(effort.functions_changed)
+            tests_added.append(effort.tests_added)
+            if effort.tests_added_per_function is not None:
+                tests_added_per_function.append(effort.tests_added_per_function)
 
         cov_records = [
             r for r in records
@@ -481,6 +524,14 @@ def compare(ctx: click.Context, languages: str, as_json: bool) -> None:
             "pr_test_change_rate": round(touched_tests / n, 3) if n else None,
             "test_lines_added_per_pr": _stats(test_lines_added),
             "test_files_changed_per_pr": _stats(test_files_changed),
+            "test_discipline": {
+                "functions_changed_per_pr": _stats(functions_changed),
+                "tests_added_per_pr": _stats(tests_added),
+                "prs_with_new_tests_rate": (
+                    round(sum(1 for v in tests_added if v > 0) / n, 3) if n else None
+                ),
+                "tests_added_per_function_changed": _stats(tests_added_per_function),
+            },
             "coverage": {
                 "n_measured": len(cov_records),
                 "diff_coverage_rate": _stats(diff_cov),
@@ -509,6 +560,23 @@ def compare(ctx: click.Context, languages: str, as_json: bool) -> None:
         tla = d["test_lines_added_per_pr"]
         if tla:
             click.echo(f"  test lines added/PR    : mean={tla['mean']}  median={tla['median']}  max={tla['max']}")
+
+        disc = d["test_discipline"]
+        fc, ta = disc["functions_changed_per_pr"], disc["tests_added_per_pr"]
+        if fc:
+            click.echo(f"  functions changed/PR   : mean={fc['mean']}  median={fc['median']}  max={fc['max']}")
+        if ta:
+            click.echo(f"  new tests added/PR     : mean={ta['mean']}  median={ta['median']}  max={ta['max']}")
+        rate = disc["prs_with_new_tests_rate"]
+        if rate is not None:
+            click.echo(f"  PRs adding a new test  : {rate*100:5.1f}%")
+        tapf = disc["tests_added_per_function_changed"]
+        if tapf:
+            click.echo(
+                f"  new tests / function changed (PRs w/ changed functions): "
+                f"mean={tapf['mean']}  median={tapf['median']}"
+            )
+
         cov = d["coverage"]
         click.echo(f"  coverage measured      : {cov['n_measured']} bugs")
         if cov["diff_coverage_rate"]:
