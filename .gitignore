@@ -3,4 +3,6 @@
 *.pyo
 .venv/
 dataset/
+.env
+*.egg-info/
 
