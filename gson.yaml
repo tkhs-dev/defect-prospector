@@ -34,11 +34,19 @@ language:
     - "Test*.java"
     - "*Tests.java"
   # テスト実行前の環境セットアップ（worktree 内で一度だけ実行）
+  # gson-parent の maven-enforcer-plugin が JDK [11,18) を要求するため、
+  # システム既定(JDK 21)とは別に JAVA_HOME をこのプロジェクト用に明示的に上書きする。
   # -pl gson -am: 本体モジュール gson とその依存モジュールのみビルド
   setup_commands:
-    - "mvn -q -B -pl gson -am compile test-compile"
+    - >-
+      set "JAVA_HOME=C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot" &&
+      set "PATH=%JAVA_HOME%\bin;%PATH%" &&
+      mvn -q -B -pl gson -am compile test-compile
   # テスト実行コマンド（本体モジュールのみ）
-  test_command: "mvn test -pl gson -am -B"
+  test_command: >-
+    set "JAVA_HOME=C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot" &&
+    set "PATH=%JAVA_HOME%\bin;%PATH%" &&
+    mvn test -pl gson -am -B
   # タイムアウト（秒）
   test_timeout: 300
 
@@ -62,6 +70,9 @@ coverage:
   # いったん無効化中（収集の速度・安定性を優先。必要になったら true に戻す）
   enabled: false
   tool: jacoco
-  command: "mvn org.jacoco:jacoco-maven-plugin:0.8.12:prepare-agent test org.jacoco:jacoco-maven-plugin:0.8.12:report -pl gson -am -B"
+  command: >-
+    set "JAVA_HOME=C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot" &&
+    set "PATH=%JAVA_HOME%\bin;%PATH%" &&
+    mvn org.jacoco:jacoco-maven-plugin:0.8.12:prepare-agent test org.jacoco:jacoco-maven-plugin:0.8.12:report -pl gson -am -B
   report_path: "gson/target/site/jacoco/jacoco.xml"
   timeout: 600
