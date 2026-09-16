@@ -39,10 +39,11 @@ _VERSION = "0.1.0"
 
 class CollectionInterrupted(Exception):
     """Ctrl+C による中断時に中途カウントを運ぶ例外。"""
-    def __init__(self, new: int, skipped: int, failed: int) -> None:
+    def __init__(self, new: int, skipped: int, failed: int, validation_counts: dict[str, int]) -> None:
         self.new = new
         self.skipped = skipped
         self.failed = failed
+        self.validation_counts = validation_counts
 
 
 class Collector:
@@ -56,10 +57,12 @@ class Collector:
         project: ProjectConfig,
         limit_override: int | None = None,
         dry_run: bool = False,
-    ) -> tuple[int, int, int]:
+    ) -> tuple[int, int, int, dict[str, int]]:
         """
         ProjectConfig に従って収集を実行する。
-        Returns: (new, skipped, failed)
+        Returns: (new, skipped, failed, validation_counts)
+        validation_counts は新規保存されたレコードの validation.status 別件数
+        （例: {"valid": 12, "invalid": 30, "setup_failed": 3}）。
         """
         tracker = GitHubAdapter(token=project.tracker_auth.token)
         vcs = GitAdapter()
@@ -99,6 +102,7 @@ class Collector:
         logger.info(f"Found {len(issues)} issues")
 
         new_count = skipped_count = failed_count = 0
+        validation_counts: dict[str, int] = {}
 
         try:
             for issue in issues:
@@ -136,13 +140,14 @@ class Collector:
 
                 new_count += 1
                 val_status = record.validation.status if record.validation else "no-validation"
+                validation_counts[val_status] = validation_counts.get(val_status, 0) + 1
                 logger.info(f"  [{bug_id}] OK  validation={val_status}")
         except KeyboardInterrupt:
-            raise CollectionInterrupted(new_count, skipped_count, failed_count)
+            raise CollectionInterrupted(new_count, skipped_count, failed_count, validation_counts)
         finally:
             validator.close()
 
-        return new_count, skipped_count, failed_count
+        return new_count, skipped_count, failed_count, validation_counts
 
     # ------------------------------------------------------------------
     # private

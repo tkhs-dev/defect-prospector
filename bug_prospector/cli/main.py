@@ -144,17 +144,27 @@ def collect(
     storage = Storage(dataset_dir)
     collector = Collector(storage=storage, dataset_dir=dataset_dir)
 
+    def _echo_validation_counts(counts: dict[str, int]) -> None:
+        if not counts:
+            return
+        breakdown = ", ".join(
+            f"{s}={n}" for s, n in sorted(counts.items(), key=lambda x: -x[1])
+        )
+        click.echo(f"  validation status: {breakdown}")
+
     try:
-        new, skipped, failed = collector.run_project(
+        new, skipped, failed, validation_counts = collector.run_project(
             project=project,
             limit_override=limit,
             dry_run=dry_run,
         )
         click.echo(f"\nCollected: {new} new  |  {skipped} skipped  |  {failed} failed")
+        _echo_validation_counts(validation_counts)
     except CollectionInterrupted as e:
         click.echo(
             f"\n[interrupted] Collected so far: {e.new} new  |  {e.skipped} skipped  |  {e.failed} failed"
         )
+        _echo_validation_counts(e.validation_counts)
         raise SystemExit(1)
 
 
