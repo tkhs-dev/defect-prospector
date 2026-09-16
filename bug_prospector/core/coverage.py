@@ -41,7 +41,7 @@ class CoverageRunner:
 
         try:
             r = subprocess.run(
-                command, shell=True, cwd=repo_path, errors="replace",
+                command, shell=True, cwd=repo_path, encoding="utf-8", errors="replace",
                 capture_output=True, text=True, timeout=self._config.timeout,
             )
         except subprocess.TimeoutExpired:

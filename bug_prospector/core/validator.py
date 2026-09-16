@@ -130,10 +130,12 @@ class Validator:
             subprocess.run(
                 ["git", "reset", "--hard", fix_ref],
                 cwd=worktree, capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
             )
             subprocess.run(
                 ["git", "clean", "-fd"],
                 cwd=worktree, capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
             )
         else:
             worktree = repo_path.parent / f"{repo_path.name}-validate-{uuid.uuid4().hex[:8]}"
@@ -221,10 +223,12 @@ class Validator:
                 subprocess.run(
                     ["git", "reset", "--hard", fix_ref],
                     cwd=self._active_worktree, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace",
                 )
                 subprocess.run(
                     ["git", "clean", "-fd"],
                     cwd=self._active_worktree, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace",
                 )
             elif created_temp:
                 try:
@@ -242,7 +246,7 @@ class Validator:
             print(f"  Running setup command: {cmd} at {cwd}")
             try:
                 r = subprocess.run(
-                    cmd, shell=True, cwd=cwd, errors="replace",
+                    cmd, shell=True, cwd=cwd, encoding="utf-8", errors="replace",
                     capture_output=True, text=True, timeout=300,
                 )
                 print(r.stdout)
@@ -257,6 +261,7 @@ class Validator:
         try:
             r = subprocess.run(
                 self._lang.test_command, shell=True, cwd=cwd,
+                encoding="utf-8", errors="replace",
                 capture_output=True, text=True,
                 timeout=self._lang.test_timeout,
             )
