@@ -434,6 +434,9 @@ def compare(ctx: click.Context, languages: str, as_json: bool) -> None:
     """Compare testing-quality metrics across languages (e.g. rust vs java).
 
     Metrics per language:
+      - Validation status breakdown (valid/invalid/setup_failed/patch_failed/
+        timeout/error/skipped) - setup_failed in particular flags environment/
+        build issues, useful when comparing execution reliability across languages
       - PR test-change rate: % of fix PRs that touch a test file at all
       - test lines added / test files changed per PR
       - functions changed / tests added per PR, and tests-added-per-function-changed
@@ -452,7 +455,7 @@ def compare(ctx: click.Context, languages: str, as_json: bool) -> None:
     import statistics
 
     from bug_prospector.adapters.language import get_language_adapter
-    from bug_prospector.core.models.record import MEASURED
+    from bug_prospector.core.models.record import MEASURED, SETUP_FAILED, SKIPPED
     from bug_prospector.core.storage import Storage
     from bug_prospector.core.test_effort import compute as compute_test_effort
 
@@ -519,8 +522,14 @@ def compare(ctx: click.Context, languages: str, as_json: bool) -> None:
         ]
         zero_diff_cov = sum(1 for v in diff_cov if v == 0.0)
 
+        val_counts: dict[str, int] = {}
+        for r in records:
+            s = r.validation.status if r.validation else SKIPPED
+            val_counts[s] = val_counts.get(s, 0) + 1
+
         report[lang] = {
             "total_bugs": n,
+            "validation_status": val_counts,
             "pr_test_change_rate": round(touched_tests / n, 3) if n else None,
             "test_lines_added_per_pr": _stats(test_lines_added),
             "test_files_changed_per_pr": _stats(test_files_changed),
@@ -555,6 +564,20 @@ def compare(ctx: click.Context, languages: str, as_json: bool) -> None:
         if d["total_bugs"] == 0:
             click.echo("  no data collected yet")
             continue
+
+        val_counts = d["validation_status"]
+        if val_counts:
+            breakdown = ", ".join(
+                f"{s}={n}" for s, n in sorted(val_counts.items(), key=lambda x: -x[1])
+            )
+            click.echo(f"  validation status      : {breakdown}")
+            setup_failed_n = val_counts.get(SETUP_FAILED, 0)
+            if setup_failed_n:
+                click.echo(
+                    f"    -> setup_failed (environment/build failure): "
+                    f"{setup_failed_n} ({setup_failed_n / d['total_bugs'] * 100:.1f}%)"
+                )
+
         pct = d["pr_test_change_rate"]
         click.echo(f"  PR touches a test file : {pct*100:5.1f}%" if pct is not None else "  n/a")
         tla = d["test_lines_added_per_pr"]
