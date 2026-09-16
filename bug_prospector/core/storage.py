@@ -70,6 +70,10 @@ class Storage:
         with self._connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM bug_records").fetchone()[0]
 
+    def delete(self, bug_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM bug_records WHERE id = ?", (bug_id,))
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db)
         conn.isolation_level = None  # autocommit

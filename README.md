@@ -167,6 +167,27 @@ bp compare --languages rust,java,python [--json]
 テスト変更率・テスト重視度・カバレッジを言語間で比較表示する。本ツールの主目的
 （言語間のテスト厳密さ比較）に対応するコマンド。
 
+### `bp delete`
+
+```
+bp delete --tracker <URLの前方一致> [--status <validationステータス>] [--bug-id <ID>]... [--dry-run] [--yes]
+```
+
+収集済みレコードを削除し、再収集できる状態に戻す。バグ修正後に古いデータを
+やり直したい場合等に使う。事故防止のため `--tracker`/`--status`/`--bug-id` の
+いずれか最低1つの絞り込みが必須（無指定でデータセット全体を消すことはできない）。
+削除時は対象レコードの一覧を表示し、`--yes`が無ければ確認を求める。
+`dataset/patches/`・`dataset/test-logs/`配下の対応するパッチ・ログファイルも
+あわせて削除する。
+
+```bash
+# 何が消えるかだけ確認
+bp delete --tracker https://github.com/BurntSushi/ripgrep --status error --dry-run
+
+# 実際に削除して bp collect で再収集できる状態に戻す
+bp delete --tracker https://github.com/BurntSushi/ripgrep --status error --yes
+```
+
 ## 出力されるメトリクスの意味
 
 ### Validation status（検証ステータス）

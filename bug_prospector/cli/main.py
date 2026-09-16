@@ -626,5 +626,91 @@ def compare(ctx: click.Context, languages: str, as_json: bool) -> None:
     click.echo("")
 
 
+@cli.command()
+@click.option("--tracker", default=None, help="Filter by tracker URL (prefix match)")
+@click.option(
+    "--status", "status_filter", default=None,
+    help="Filter by validation status (valid/invalid/setup_failed/patch_failed/timeout/error/skipped)",
+)
+@click.option(
+    "--bug-id", "bug_ids", multiple=True,
+    help="Filter by exact bug ID (repeatable)",
+)
+@click.option("--dry-run", is_flag=True, help="Preview only. Nothing is deleted.")
+@click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt")
+@click.pass_context
+def delete(
+    ctx: click.Context,
+    tracker: str | None,
+    status_filter: str | None,
+    bug_ids: tuple[str, ...],
+    dry_run: bool,
+    yes: bool,
+) -> None:
+    """Delete collected records so they can be re-collected (e.g. after fixing a bug).
+
+    At least one of --tracker / --status / --bug-id is required, as a safety guard
+    against accidentally wiping the whole dataset. Also removes the matching
+    patch files and test logs under the dataset directory, if any.
+
+    \b
+    Examples:
+      bp delete --tracker https://github.com/BurntSushi/ripgrep --status error
+      bp delete --bug-id github-BurntSushi-ripgrep-3419 --bug-id github-BurntSushi-ripgrep-3180
+      bp delete --tracker https://github.com/BurntSushi/ripgrep --status error --dry-run
+    """
+    from bug_prospector.core.storage import Storage
+
+    if not (tracker or status_filter or bug_ids):
+        raise click.UsageError("At least one filter is required: --tracker, --status, or --bug-id")
+
+    dataset_dir: Path = ctx.obj["dataset_dir"]
+    storage = Storage(dataset_dir)
+    records = storage.list_all()
+
+    def _matches(r) -> bool:
+        if tracker and not r.source.tracker_url.startswith(tracker):
+            return False
+        if status_filter:
+            s = r.validation.status if r.validation else "skipped"
+            if s != status_filter:
+                return False
+        if bug_ids and r.id not in bug_ids:
+            return False
+        return True
+
+    targets = [r for r in records if _matches(r)]
+
+    click.echo(f"{len(targets)} record(s) match the filter.")
+    if not targets:
+        return
+
+    preview = targets[:20]
+    for r in preview:
+        s = r.validation.status if r.validation else "skipped"
+        click.echo(f"  {r.id}  (validation={s})")
+    if len(targets) > len(preview):
+        click.echo(f"  ... and {len(targets) - len(preview)} more")
+
+    if dry_run:
+        click.echo("[dry-run] Nothing deleted.")
+        return
+
+    if not yes and not click.confirm(f"Delete {len(targets)} record(s) from the dataset?"):
+        click.echo("Aborted.")
+        return
+
+    deleted_files = 0
+    for r in targets:
+        storage.delete(r.id)
+        for pattern in (f"**/{r.id}.patch", f"**/{r.id}-*.log"):
+            for p in dataset_dir.glob(pattern):
+                p.unlink(missing_ok=True)
+                deleted_files += 1
+
+    suffix = f" and {deleted_files} related file(s)" if deleted_files else ""
+    click.echo(f"Deleted {len(targets)} record(s){suffix}. Re-run `bp collect` to re-collect them.")
+
+
 if __name__ == "__main__":
     cli()
