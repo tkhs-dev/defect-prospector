@@ -5,4 +5,5 @@
 dataset/
 .env
 *.egg-info/
+*.log
 
