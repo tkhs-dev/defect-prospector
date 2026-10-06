@@ -61,36 +61,35 @@ fix/buggy 両状態でのビルド・テスト実行を伴うため収集時よ�
 ```
 bp generate-tests
   for each candidate BugRecord:
-    1. コンテキスト収集
-         - IssueInfo.title / body
-         - FixInfo.diff のソース差分部分（split_diff の source_diff）
-         - 変更されたファイルの buggy 時点の内容
-             （Validator が作る worktree をそのまま使って読み取る。新規VCS APIは不要）
-         - 既存テストファイルのサンプル1〜2本（test_patterns でマッチしたもの）
-             → プロジェクトのテスト流儀（フレームワーク・フィクスチャ・命名）を模倣させる
-         - LanguageConfig.test_command / 言語種別
-    2. LLM にテスト生成を依頼
-         → 出力は「新規テストファイル、または既存テストファイルへの追記」を表す unified diff
-    3. 検証ループ（最大 max_attempts 回）
-         a. fix コミットの worktree に生成テストを適用 → テスト実行
-            → 生成したテストケースが PASS であること
-         b. 同じ worktree にソース差分のみ逆パッチ適用（既存の reverse_patch_source と同じ）→ テスト実行
-            → 生成したテストケースが FAIL であること
-         c. a/b 両方を満たせば confirmed。
-            満たさなければ、実行結果（stdout/stderr の該当部分）を次の試行のプロンプトに
-            フィードバックとして渡して再生成
-    4. confirmed:
-         - 生成テストのソースを dataset/generated-tests/<bug-id>/ に保存
+    1. fix コミットの worktree を用意（Validator の既存機構を再利用）
+    2. 検証ループ（最大 max_attempts 回）
+         a. LLMAdapter.generate_test(worktree, task, feedback) を呼ぶ
+              → 実装によって手段は異なるが、結果として worktree 内に
+                「新規テストファイル」または「既存テストファイルへの追記」が書き込まれる
+                （詳細は 6.1 節。Claude Code のようなエージェント型は自分で直接ファイルを書き、
+                チャット補完APIのような非エージェント型はdiffを生成してこのメソッド内で git apply する）
+         b. そのままテスト実行 → 生成したテストケースが PASS であること（fix状態の確認）
+         c. 同じ worktree にソース差分のみ逆パッチ適用（既存の reverse_patch_source と同じ）→ テスト実行
+            → 生成したテストケースが FAIL であること（buggy状態の確認）
+         d. b/c 両方を満たせば confirmed。
+            満たさなければ worktree を fix_ref に reset --hard + clean -fd して生成物を消し、
+            直前の実行結果（stdout/stderr の該当部分）をフィードバックとして次の試行へ渡す
+    3. confirmed:
+         - worktree 内に残っている生成テストファイルの内容・パスを読み取り
+           dataset/generated-tests/<bug-id>/ に保存
          - BugRecord.reproduction.generated_test を設定
          - validation.status を "llm_valid" に更新して再保存
+         - worktree を reset --hard + clean -fd（次のバグのために元に戻す）
        未confirmed（試行上限到達）:
          - 変更を加えず、試行回数と失敗理由だけ記録（再実行時のスキップ判定に使用）
 ```
 
-worktree の作成・リセット・クリーンアップ、ソース差分のみの逆パッチ適用、テスト実行、
-`LanguageAdapter.parse_test_output()` によるケース単位の結果抽出はすべて `Validator` /
-`core/patch.py` の既存実装をそのまま再利用する。新規に実装するのは
-「LLMにテスト草案を書かせる部分」と「生成テストというもう1枚のパッチを適用する手順」だけでよい。
+生成したテストファイルは `test_patterns` にマッチするパス（例: `tests/test_xxx.py`）に書かせることで、
+`split_diff()` ベースの逆パッチ適用（c）がこのファイルを巻き込まない（＝ソースだけが逆パッチされ、
+生成テストはそのまま残る）という既存の仕組みをそのまま利用できる。worktree の作成・リセット・
+クリーンアップ、ソース差分のみの逆パッチ適用、テスト実行、`LanguageAdapter.parse_test_output()`
+によるケース単位の結果抽出は、すべて `Validator` / `core/patch.py` の既存実装をそのまま再利用する。
+新規に実装するのは「LLMAdapterの呼び出しと試行ループ」と「生成ファイルの検出・保存」だけでよい。
 
 ## 5. データモデル拡張（`core/models/record.py`）
 
@@ -101,7 +100,8 @@ class GeneratedTestInfo:
     function_name: str | None # 生成されたテスト関数/メソッド名
     source_code: str          # 生成されたテストの全文（または追記ブロック）
     framework: str            # "pytest" / "cargo-test" / "junit" ...
-    model: str                # 使用したLLMモデル名
+    provider: str             # LLMAdapter の実装名（"claude_code" / "anthropic_api" / "openai_api" ...）
+    model: str                # 使用したモデル名（providerの応答から取得できる範囲で記録）
     attempts: int             # confirmed に至るまでに要した試行回数
     confirmed: bool           # buggy:FAIL / fix:PASS を機械的に確認できたか
     generated_at: datetime
@@ -120,30 +120,112 @@ class GeneratedTestInfo:
 
 ### 6.1 `adapters/llm/` — LLMAdapter
 
-既存の `adapters/{vcs,tracker,language}` と同じ ABC パターンに合わせる。
+**テスト生成には Claude Code CLI の `-p`（print / 非対話）モードを第一の実装として使う。**
+一方で、特定のベンダー・特定の呼び出し方式にロックインしないよう、`adapters/{vcs,tracker,language}`
+と同じ ABC パターンに合わせて差し替え可能にする。
+
+Claude Code は Read / Write / Edit / Bash などのツールを自分で持つ**エージェント型**のCLIであり、
+「プロンプト文字列を渡したら diff テキストが返ってくる」という単純なチャット補完の往復には馴染まない
+（実行ディレクトリを自分で探索し、ファイルを直接書き換える方が自然で、かつコンテキスト構築の手間も省ける）。
+一方、素の Anthropic Messages API や OpenAI API のような**非エージェント型**の実装はファイルシステムに
+触れられないため、こちらはプロンプトに埋め込んだ情報だけから diff テキストを生成し、呼び出し側が
+`git apply` で適用する必要がある。
+
+この違いを吸収するため、`LLMAdapter` は「結果としてworktree内に変更が存在する状態になる」ことだけを
+契約とする（返り値の型でdiffテキストを強制しない）。
 
 ```python
 # bug_prospector/adapters/llm/base.py
+@dataclass
+class TestGenerationTask:
+    """LLMAdapter に渡すコンテキスト。全フィールドをプロンプトに使うかはAdapter実装次第
+    （エージェント型は worktree を自分で探索できるため一部を使わなくてもよい）。"""
+    issue_title: str
+    issue_body: str
+    source_diff: str              # fix.diff のうちソース差分部分（split_diff の source_diff）
+    test_patterns: list[str]      # 生成するテストファイルが満たすべきパスパターン
+    language: str
+    test_command: str
+    sample_test_files: dict[str, str] | None = None  # 既存テストのサンプル（path -> 内容）
+
+
 class LLMAdapter(ABC):
     @abstractmethod
-    def generate_test(self, prompt: str, feedback: str | None = None) -> str:
-        """プロンプト（と前回試行のフィードバック）から、テストを表す unified diff を返す。"""
+    def generate_test(
+        self,
+        worktree: Path,
+        task: TestGenerationTask,
+        feedback: str | None = None,
+    ) -> None:
+        """
+        worktree 内に再現テストを書き込む（新規ファイル作成、または既存テストファイルへの追記）。
+        書き込み先は task.test_patterns にマッチするパスにすること
+        （split_diff による逆パッチ適用時に巻き込まれないようにするため）。
+
+        実装方式は問わない:
+          - エージェント型（Claude Code 等）: worktree をカレントディレクトリとして起動し、
+            自身の Read/Write/Edit ツールで直接ファイルを書き換える。
+          - チャット補完API型（素の Anthropic/OpenAI API 等）: プロンプトから diff テキストを
+            生成し、このメソッド内で git apply して worktree に適用する。
+
+        呼び出し後、TestGenerator / Validator 側は worktree の `git status --porcelain` /
+        ファイル内容を見て「何が追加・変更されたか」を判定する。生成に失敗した場合
+        （API エラー・空応答・パース不能な出力等）は例外を送出する。
+        """
 ```
 
-組み込み実装として `AnthropicAdapter`（`adapters/llm/anthropic.py`）を用意する。
-APIキーは `.env` 経由で読み込む（`GITHUB_TOKEN` と同じ `python-dotenv` の仕組みを流用し、
-例えば `ANTHROPIC_API_KEY` を参照する）。
+#### 6.1.1 既定実装: `ClaudeCodeAdapter`（`adapters/llm/claude_code.py`）
+
+`claude` CLI をサブプロセスとして呼び出す。
+
+```python
+subprocess.run(
+    [
+        "claude", "-p", prompt,
+        "--output-format", "json",
+        # worktree 配下だけで完結させ、与えるツールを最小限に絞る（10.1節）
+        "--allowedTools", "Read,Grep,Glob,Write,Edit,Bash(<test_command のみ>)",
+    ],
+    cwd=worktree,
+    timeout=...,
+    capture_output=True,
+    text=True,
+)
+```
+
+- プロンプトには `TestGenerationTask` の内容（Issue・ソース差分・テストコマンド・既存テストサンプル）を
+  埋め込みつつ、「worktree 内のソースを読んで良い／テストファイルは `test_patterns` に沿った場所に
+  書くこと／buggy状態を再現するテストを1本書くこと」を指示する。
+  Claude Code 自身が Read/Grep/Glob でリポジトリを探索できるため、`sample_test_files` や
+  buggy時点のソース内容は厳密には埋め込まなくても自力で見つけられるが、往復（ツール呼び出し）の
+  回数とコストを抑えるため、少なくとも Issue 本文とソース差分は最初からプロンプトに含める。
+- `--output-format json` でレスポンスのメタデータ（使用モデル名・ターン数・コスト等）を取得し、
+  `GeneratedTestInfo.model` / ログに記録する。
+- 正確なCLIオプション名・JSON出力スキーマはバージョンに依存するため、実装時に
+  `claude --help` および Claude Code の非対話モードのドキュメントで確認して確定する
+  （本節のオプション名は設計意図を示す例であり、確定仕様ではない）。
+- `.env` の `ANTHROPIC_API_KEY` 等、`claude` CLI 自身の認証はユーザー側の既存セットアップ
+  （`claude login` 済み、またはAPIキー環境変数）にそのまま乗る。本ツールが別途キー管理を持つ必要はない。
+
+#### 6.1.2 差し替え可能な他実装（将来・任意）
+
+- `AnthropicAPIAdapter`（`adapters/llm/anthropic_api.py`）: 素の Anthropic Messages API を直接叩く。
+  `TestGenerationTask` の全フィールドをプロンプトに文字列化して埋め込み、応答から diff を抽出して
+  `git apply` する非エージェント型。
+- `OpenAIAdapter`（`adapters/llm/openai.py`）: 同様の構造で OpenAI Chat Completions / Responses API を使う。
+- いずれも `config.yaml` の `llm.provider` で選択する（7節）。`TestGenerator` / `Validator` 側のコードは
+  `LLMAdapter` インターフェースのみに依存するため、provider を増やしても呼び出し側の変更は不要。
 
 ### 6.2 コンテキスト組み立て（`core/test_generator.py` 内）
 
+`TestGenerationTask` を組み立てる処理は provider に依存せず共通化する。
+
 - Issueタイトル・本文、`fix.diff` のソース側差分は既に `BugRecord` に保持済みのものをそのまま使う。
-- 変更ファイルの buggy 時点の内容は、`Validator` が `reverse_patch_source` のために既に用意している
-  worktree（ソース差分を逆パッチ適用済み＝buggy相当の状態）から直接ファイルを読み取る。
-  `GitAdapter` に新しい `get_file_at` 等を追加する必要はない。
-- 既存テストのサンプルは `LanguageConfig.test_patterns` でマッチしたファイルを
-  worktree 内から 1〜2 本選んでそのまま埋め込み、フレームワーク・インポート・命名規約を模倣させる。
+- 既存テストのサンプルは `LanguageConfig.test_patterns` でマッチしたファイルを worktree 内から
+  1〜2本選んでそのまま埋め込み、フレームワーク・インポート・命名規約を模倣させる
+  （エージェント型実装では省略可能な補助情報、非エージェント型実装では必須の情報）。
 - 大きなリポジトリ（flask/ripgrep/clap/serde 等サイズの異なるプロジェクトが混在する）を想定し、
-  ファイル単位・プロンプト全体の両方に文字数上限を設け、超過分は切り詰めてその旨を明記する。
+  埋め込むファイル単位・プロンプト全体の両方に文字数上限を設け、超過分は切り詰めてその旨を明記する。
 
 ### 6.3 検証ループ（`Validator` の拡張）
 
@@ -155,24 +237,33 @@ def validate_with_generated_test(
     repo_path: Path,
     fix_ref: str,
     source_diff: str,
-    test_patch: str,
+    llm: LLMAdapter,
+    task: TestGenerationTask,
     bug_id: str,
-) -> tuple[bool, TestRunResult, TestRunResult]:
+    max_attempts: int,
+) -> GenerationAttemptResult:
     """
-    generated test が fix:PASS / buggy:FAIL になるかを確認する。
-    Returns: (confirmed, fix_result, buggy_result)
+    LLMAdapter を使って再現テストを生成し、fix:PASS / buggy:FAIL を機械的に確認する。
+    確認できたら生成テストのファイル内容・パスを含めて返す。
     """
 ```
 
-処理内容:
+処理内容（1レコードにつき最大 `max_attempts` 回のループを内包する）:
 1. 既存の worktree 確保ロジック（永続/一時、`git reset --hard` + `git clean -fd` によるリセット）を再利用し、
    `fix_ref` のスナップショットを用意する。
-2. `test_patch`（LLM が出力した新規テストの diff）を `git apply` で適用 → テスト実行。
-   生成したテストケースのみを `lang_adapter.parse_test_output()` の結果から名前で引き当て、PASS かを見る。
-   ここでのビルド/適用失敗は record 全体の `setup_failed` 等にはせず、LLMへのフィードバックとして扱う。
-3. 続けて `source_diff` のみを逆パッチ適用（既存の `reverse_patch_source` と同一戦略）→ テスト実行。
+2. `llm.generate_test(worktree, task, feedback)` を呼ぶ（6.1節の契約どおり、worktree 内に
+   テストファイルが書き込まれる）。
+3. そのままテスト実行 → `lang_adapter.parse_test_output()` で生成テストケースを名前で引き当て、
+   PASS であることを確認する。ここでの失敗（ビルドエラー・テストが見つからない等）は
+   record 全体の `setup_failed` にはせず、次の試行へのフィードバックとして扱う。
+4. 続けて `source_diff` のみを逆パッチ適用（既存の `reverse_patch_source` と同一戦略。
+   生成テストファイルは `test_patterns` に沿ったパスにあるため巻き込まれない）→ テスト実行。
    生成テストが FAIL になっているかを同様に確認する。
-4. `finally` で worktree を `fix_ref` に `reset --hard` + `clean -fd`
+5. 3・4 の両方を満たせば confirmed。worktree 内の生成ファイルを読み取って
+   `GeneratedTestInfo` を組み立て、呼び出し元に返す。
+   満たさなければ、worktree を `fix_ref` に `reset --hard` + `clean -fd` して生成物を消し、
+   直前の実行結果（stdout/stderr の該当部分）をフィードバックとして次の試行へ進む。
+6. `finally` で worktree を `fix_ref` に `reset --hard` + `clean -fd`
    （既存の `Validator.validate()` の後片付けと同じ）し、永続 worktree に生成テストの痕跡を残さない。
 
 **既存テスト全体への影響は見ない**（他のテストの flaky な挙動は無視し、生成テスト単体の FAIL/PASS だけを見る）。
@@ -181,19 +272,23 @@ def validate_with_generated_test(
 ### 6.4 `TestGenerator`（オーケストレーター）
 
 `core/test_generator.py` に、`Collector` と同じ粒度で以下を行うクラスを追加する。
+試行ループ自体は 6.3 の `Validator.validate_with_generated_test()` に内包されるため、
+`TestGenerator` は候補レコードの列挙と結果の保存に専念する薄い層になる。
 
 ```
-TestGenerator.run(records, llm_config, max_attempts) -> GenerationSummary
-  for each candidate:
-    attempt = 1
-    feedback = None
-    loop:
-      diff = llm.generate_test(prompt, feedback)
-      confirmed, fix_result, buggy_result = validator.validate_with_generated_test(...)
-      if confirmed: 保存して次のレコードへ
-      if attempt == max_attempts: 失敗として記録し次のレコードへ
-      feedback = 前回の fix_result / buggy_result の該当テストの出力
-      attempt += 1
+TestGenerator.run(records, llm: LLMAdapter, llm_config) -> GenerationSummary
+  for each candidate BugRecord:
+    task = build_task(record)  # 6.2節
+    result = validator.validate_with_generated_test(
+        repo_path, record.fix.commit, source_diff, llm, task,
+        record.id, llm_config.max_attempts,
+    )
+    if result.confirmed:
+        record.reproduction.generated_test = result.generated_test
+        record.validation = replace(record.validation, status=LLM_VALID)
+        storage.save(record)
+    else:
+        log 失敗(試行回数, 理由)
 ```
 
 ## 7. 設定ファイル拡張
@@ -203,13 +298,25 @@ TestGenerator.run(records, llm_config, max_attempts) -> GenerationSummary
 ```yaml
 llm:
   enabled: false
-  provider: anthropic          # LLMAdapter の実装選択
-  model: "claude-sonnet-5"
+  provider: claude_code         # LLMAdapter の実装選択。既定は claude_code
   max_attempts: 3
-  max_context_chars: 20000     # プロンプトに埋め込むコンテキストの文字数上限
+  max_context_chars: 20000      # プロンプトに埋め込むコンテキストの文字数上限
+
+  # provider: claude_code のときのみ参照
+  claude_code:
+    command: "claude"           # PATH上のclaudeコマンド名、またはフルパス
+    allowed_tools: "Read,Grep,Glob,Write,Edit"  # Bash(test_command) は実行時に動的に追加
+    timeout: 600
+
+  # provider: anthropic_api / openai_api のときのみ参照（将来実装）
+  # model: "claude-sonnet-5"
+  # api_key_env: "ANTHROPIC_API_KEY"
 ```
 
-`ProjectConfig` に `LLMConfig` dataclass を追加し、`ValidationConfig` と同様 `_from_dict` でパースする。
+`provider` を切り替えるだけで `AnthropicAPIAdapter` / `OpenAIAdapter`（6.1.2節、将来実装）にも
+差し替えられるようにする。`ProjectConfig` に `LLMConfig` dataclass を追加し、`ValidationConfig` と
+同様 `_from_dict` でパースする。`provider` ごとの固有設定（`claude_code:` ブロック等）は
+`LLMConfig` 内にネストしたサブdataclassとして持たせ、未対応providerの設定は無視する。
 
 ## 8. CLI仕様: `bp generate-tests`
 
@@ -258,11 +365,31 @@ Generated: 31 confirmed | 11 failed | 0 skipped
 
 ## 10. 安全性・コスト制御
 
+### 10.1 Claude Code（`-p`）の権限スコープ
+
+Claude Code は `-p`（非対話）モードでも Read/Write/Edit/Bash 等のツールを使う。対話モードと違い
+その場で人間が承認できないため、ヘッドレス実行では事前にツール許可を与えるか
+（`--allowedTools` 等）、`--dangerously-skip-permissions` のような全面許可オプションに頼ることになる。
+本設計では**後者は使わない**方針とする。代わりに:
+
+- `cwd` は常に使い捨ての worktree（6.1.1節）とし、本体リポジトリやホームディレクトリには
+  Claude Code のカレントディレクトリを向けない。
+- 許可するツールは `Read` / `Grep` / `Glob` / `Write` / `Edit` と、`Bash` は
+  `LanguageConfig.test_command` に対応するコマンドのみに絞る（例: `Bash(pytest:*)` /
+  `Bash(cargo test:*)`）。任意コマンド実行・ネットワークアクセス・git操作（push/commit等）は許可しない。
+- worktree 外（`..` を含むパス等）へのファイル書き込みを許すツール設定にしない。
+
+これにより、万一 LLM が意図しない／悪意に近い出力をしても、影響範囲は使い捨て worktree 内の
+ファイルシステム操作とテストコマンド実行に限定される。
+
+### 10.2 一般
+
 - **実行環境**: 生成されたテストコードは信頼できない入力として扱う。実行は常に使い捨ての worktree
   （既存の `Validator` の一時/永続 worktree 機構）の中で行い、開発者の作業コピーには一切触れない。
   `LanguageConfig.test_timeout` を上限として機能させる（既存の仕組みをそのまま適用）。
-- **将来課題**: 現状の `subprocess.run(..., shell=True)` ベースの実行はネットワーク／ファイルシステムへの
-  アクセスを制限しない。利用規模が拡大する場合はコンテナ等でのサンドボックス実行を追加検討する
+- **将来課題**: 現状の `subprocess.run(..., shell=True)` ベースのテスト実行自体（Claude Code 経由でない、
+  通常の `Validator._run_tests`）はネットワーク／ファイルシステムへのアクセスを制限しない。
+  利用規模が拡大する場合はコンテナ等でのサンドボックス実行を追加検討する
   （v1ではスコープ外とし、ドキュメントで明示するに留める）。
 - **生成物の扱い**: 生成テストは `dataset/generated-tests/` 配下にのみ保存し、元リポジトリへの
   自動コミット・push は行わない。
@@ -288,9 +415,14 @@ Generated: 31 confirmed | 11 failed | 0 skipped
 
 ## 12. 段階的実装計画
 
-1. `GeneratedTestInfo` モデルと `llm_valid` ステータス定数を追加する（挙動はまだ変えない）。
-2. `LLMAdapter` ABC と `AnthropicAdapter`、コンテキスト組み立て、プロンプト設計を実装する
+1. `GeneratedTestInfo` モデル（`provider` フィールド含む）と `llm_valid` ステータス定数を追加する
+   （挙動はまだ変えない）。
+2. `LLMAdapter` ABC / `TestGenerationTask` と、既定実装 `ClaudeCodeAdapter`（`claude -p` 呼び出し、
+   10.1節の権限スコープ）、コンテキスト組み立てを実装する
    （検証ループなし。生成結果をログ出力して目視確認できる段階に留める）。
-3. `Validator.validate_with_generated_test()` と再試行・フィードバックループを実装する。
+3. `Validator.validate_with_generated_test()` と再試行・フィードバックループを実装する
+   （`ClaudeCodeAdapter` で動作確認）。
 4. `bp generate-tests` CLIコマンドと `bp stats` の内訳表示更新を実装する。
-5. （フォローアップ）利用規模の拡大に応じたサンドボックス実行の強化を検討する。
+5. （フォローアップ、任意）`AnthropicAPIAdapter` / `OpenAIAdapter`（6.1.2節）を追加し、
+   `llm.provider` 切り替えで他のLLM/APIも使えることを確認する。
+6. （フォローアップ）利用規模の拡大に応じたサンドボックス実行の強化を検討する。
