@@ -12,6 +12,4 @@
 | [adapter-interface.md](adapter-interface.md) | VCS / IssueTracker / Language / Coverage アダプタのABCと拡張方法 |
 | [cli-spec.md](cli-spec.md) | CLIコマンド仕様（設計初期のもの。末尾に実装との差分注記あり） |
 | [test-rigor-comparison.md](test-rigor-comparison.md) | Rust/Java/Pythonのテスト厳密さ比較の実験設計・対象プロジェクトの選定理由・実行手順 |
-
-> `test-generation.md`（LLMによるテスト自動生成の設計）は計画段階で言及されて
-> いたが未実装のため、索引からは削除している。
+| [test-generation.md](test-generation.md) | テスト非同梱バグに対するLLMベース再現テスト生成の設計（未実装） |
