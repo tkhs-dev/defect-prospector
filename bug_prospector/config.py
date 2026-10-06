@@ -71,6 +71,26 @@ class CoverageConfig:
     timeout: int = 600
 
 
+@dataclass
+class ClaudeCodeConfig:
+    """provider: claude_code のときのみ参照する設定。"""
+    command: str = "claude"  # PATH上のclaudeコマンド名、またはフルパス
+    # claude -p に渡す --allowedTools のうち、Bash(test_command) を除く固定部分
+    allowed_tools: str = "Read,Grep,Glob,Write,Edit"
+    timeout: int = 600
+
+
+@dataclass
+class LLMConfig:
+    """LLMによる再現テスト生成設定（doc/test-generation.md 参照）。"""
+    enabled: bool = False
+    provider: str = "claude_code"
+    max_attempts: int = 3
+    # プロンプトに埋め込むコンテキスト（Issue本文・diff等）1ブロックあたりの文字数上限
+    max_context_chars: int = 20000
+    claude_code: ClaudeCodeConfig = field(default_factory=ClaudeCodeConfig)
+
+
 # ---------------------------------------------------------------------------
 # Top-level project config
 # ---------------------------------------------------------------------------
@@ -88,6 +108,7 @@ class ProjectConfig:
     language: LanguageConfig = field(default_factory=LanguageConfig)
     validation: ValidationConfig = field(default_factory=ValidationConfig)
     coverage: CoverageConfig = field(default_factory=CoverageConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
 
     @classmethod
     def from_file(cls, path: Path) -> ProjectConfig:
@@ -104,6 +125,7 @@ class ProjectConfig:
         lang_d = d.get("language", {})
         val_d = d.get("validation", {})
         cov_d = d.get("coverage", {})
+        llm_d = d.get("llm", {})
 
         search = SearchConfig(
             labels=search_d.get("labels", ["bug"]),
@@ -133,6 +155,18 @@ class ProjectConfig:
             report_path=cov_d.get("report_path", ""),
             timeout=cov_d.get("timeout", 600),
         )
+        claude_code_d = llm_d.get("claude_code", {})
+        llm = LLMConfig(
+            enabled=llm_d.get("enabled", False),
+            provider=llm_d.get("provider", "claude_code"),
+            max_attempts=llm_d.get("max_attempts", 3),
+            max_context_chars=llm_d.get("max_context_chars", 20000),
+            claude_code=ClaudeCodeConfig(
+                command=claude_code_d.get("command", "claude"),
+                allowed_tools=claude_code_d.get("allowed_tools", "Read,Grep,Glob,Write,Edit"),
+                timeout=claude_code_d.get("timeout", 600),
+            ),
+        )
 
         tracker_d = d.get("tracker", {})
         return cls(
@@ -146,6 +180,7 @@ class ProjectConfig:
             language=language,
             validation=validation,
             coverage=coverage,
+            llm=llm,
         )
 
 

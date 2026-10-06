@@ -43,3 +43,16 @@ validation:
   # reverse_patch_source: ソースファイルのみ逆パッチ（fixで追加されたテストは保持）
   # reverse_patch_all:    全ファイルを逆パッチ
   strategy: reverse_patch_source
+
+# bp generate-tests 用（doc/test-generation.md）。
+# fixにテストが同梱されておらずFAIL→PASSを確認できなかったレコードに対し、
+# LLMで再現テストを合成する。
+llm:
+  enabled: false
+  provider: claude_code      # 既定はClaude Code CLI（claude -p）。他実装はprovider切り替えで差し替え可能
+  max_attempts: 3
+  max_context_chars: 20000
+  claude_code:
+    command: "claude"
+    allowed_tools: "Read,Grep,Glob,Write,Edit"
+    timeout: 600

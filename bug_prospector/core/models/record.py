@@ -116,6 +116,38 @@ class CoverageResult:
 
 
 # ---------------------------------------------------------------------------
+# LLMによる再現テスト生成結果
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GeneratedTestInfo:
+    """LLMが合成した再現テストの情報（doc/test-generation.md 参照）。"""
+    file_path: str            # テストファイルパス（リポジトリルートからの相対パス）
+    function_name: str | None  # 生成されたテスト関数/メソッド名
+    source_code: str          # 生成されたテストファイルの内容
+    framework: str            # 言語種別（"rust" / "python" / "java" 等）
+    provider: str             # LLMAdapter の実装名（"claude_code" 等）
+    model: str                # 使用したモデル名（取得できなければ空文字）
+    attempts: int              # confirmed に至るまでに要した試行回数
+    confirmed: bool            # buggy:FAIL / fix:PASS を機械的に確認できたか
+    generated_at: datetime
+
+    @classmethod
+    def from_dict(cls, d: dict) -> GeneratedTestInfo:
+        return cls(
+            file_path=d["file_path"],
+            function_name=d.get("function_name"),
+            source_code=d["source_code"],
+            framework=d["framework"],
+            provider=d["provider"],
+            model=d.get("model", ""),
+            attempts=d["attempts"],
+            confirmed=d["confirmed"],
+            generated_at=datetime.fromisoformat(d["generated_at"]),
+        )
+
+
+# ---------------------------------------------------------------------------
 # 検証結果
 # ---------------------------------------------------------------------------
 
@@ -127,6 +159,7 @@ SETUP_FAILED = "setup_failed"
 TIMEOUT = "timeout"
 ERROR = "error"
 SKIPPED = "skipped"
+LLM_VALID = "llm_valid"   # LLMが合成した再現テストでFAIL→PASSを確認（バグ認定）
 
 
 @dataclass
@@ -138,7 +171,7 @@ class ValidationResult:
 
     @property
     def is_confirmed_bug(self) -> bool:
-        return self.status == VALID
+        return self.status in (VALID, LLM_VALID)
 
     @classmethod
     def from_dict(cls, d: dict) -> ValidationResult:
@@ -179,6 +212,7 @@ class ReproInfo:
     steps: list[str] = field(default_factory=list)
     expected_behavior: str | None = None
     actual_behavior: str | None = None
+    generated_test: GeneratedTestInfo | None = None
 
     @classmethod
     def from_dict(cls, d: dict) -> ReproInfo:
@@ -187,6 +221,7 @@ class ReproInfo:
             steps=d.get("steps", []),
             expected_behavior=d.get("expected_behavior"),
             actual_behavior=d.get("actual_behavior"),
+            generated_test=GeneratedTestInfo.from_dict(d["generated_test"]) if d.get("generated_test") else None,
         )
 
 

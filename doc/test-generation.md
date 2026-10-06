@@ -176,15 +176,18 @@ class LLMAdapter(ABC):
 
 #### 6.1.1 既定実装: `ClaudeCodeAdapter`（`adapters/llm/claude_code.py`）
 
-`claude` CLI をサブプロセスとして呼び出す。
+`claude` CLI（v2.1系で動作確認済み）をサブプロセスとして呼び出す。
 
 ```python
 subprocess.run(
     [
         "claude", "-p", prompt,
         "--output-format", "json",
-        # worktree 配下だけで完結させ、与えるツールを最小限に絞る（10.1節）
-        "--allowedTools", "Read,Grep,Glob,Write,Edit,Bash(<test_command のみ>)",
+        "--permission-prompts", "none",   # 非対話実行なので、プロンプトが必要な呼び出しは自動拒否させる
+        "--restricted",                   # Bash等のコード実行系ツールを一旦すべて外し、
+                                           # 残るファイル系ツール(Write/Edit/Read等)をcwd配下に閉じ込める
+        "--tools", "Bash",                 # --restricted で外された Bash だけ再度ツール一覧に戻す
+        "--allowedTools", f"Read,Grep,Glob,Write,Edit,Bash({test_command_prefix} *)",
     ],
     cwd=worktree,
     timeout=...,
@@ -193,17 +196,28 @@ subprocess.run(
 )
 ```
 
+- `--restricted` と `--tools` / `--allowedTools` の役割分担を取り違えないこと。
+  `--tools` は「モデルに見せるツールの顔ぶれ」、`--allowedTools` は「確認なしで自動承認する呼び出し」。
+  両方を指定して初めて、worktree 内での Read/Write/Edit と、指定コマンドのみの Bash 実行が
+  プロンプト待ちにならず動く。**`--restricted` を使うと、`Write`/`Edit` はcwd（worktree）配下にしか
+  書き込めなくなることを実機（claude-code 2.1.290）で確認済み**（`--allowedTools` だけで
+  `--restricted` を付けない場合、Writeツール自体はcwd外にも書き込めてしまうため、
+  このコンボ無しに単に`--allowedTools`を絞るだけでは worktree 外への書き込みを防げない。10.1節参照）。
+- `Bash` の許可パターンは `test_command` の先頭トークンから単純に作る
+  （例: `test_command="pytest --tb=short -q"` → `Bash(pytest *)`）。`uv run pytest` のように
+  ラッパー経由のコマンドだと先頭トークンが広すぎる許可になりうる点は既知の限界とする。
 - プロンプトには `TestGenerationTask` の内容（Issue・ソース差分・テストコマンド・既存テストサンプル）を
   埋め込みつつ、「worktree 内のソースを読んで良い／テストファイルは `test_patterns` に沿った場所に
   書くこと／buggy状態を再現するテストを1本書くこと」を指示する。
   Claude Code 自身が Read/Grep/Glob でリポジトリを探索できるため、`sample_test_files` や
   buggy時点のソース内容は厳密には埋め込まなくても自力で見つけられるが、往復（ツール呼び出し）の
   回数とコストを抑えるため、少なくとも Issue 本文とソース差分は最初からプロンプトに含める。
-- `--output-format json` でレスポンスのメタデータ（使用モデル名・ターン数・コスト等）を取得し、
-  `GeneratedTestInfo.model` / ログに記録する。
-- 正確なCLIオプション名・JSON出力スキーマはバージョンに依存するため、実装時に
-  `claude --help` および Claude Code の非対話モードのドキュメントで確認して確定する
-  （本節のオプション名は設計意図を示す例であり、確定仕様ではない）。
+- `--output-format json` の応答には `result`（テキスト）・`is_error`・`modelUsage`
+  （モデル名をキーとする使用量辞書）・`permission_denials`・`total_cost_usd` 等が含まれる
+  （実機で確認したスキーマ）。成功判定は**プロセスの終了コードではなく `is_error` フィールドで行う**
+  （意図的に権限を絞っているため、スコープ外操作が `permission_denials` に載って終了コードが
+  非ゼロになることがあるが、それ自体は想定内の拒否であり失敗ではない）。モデル名は
+  `modelUsage` のキーから取得し `GeneratedTestInfo.model` に記録する。
 - `.env` の `ANTHROPIC_API_KEY` 等、`claude` CLI 自身の認証はユーザー側の既存セットアップ
   （`claude login` 済み、またはAPIキー環境変数）にそのまま乗る。本ツールが別途キー管理を持つ必要はない。
 
@@ -368,16 +382,26 @@ Generated: 31 confirmed | 11 failed | 0 skipped
 ### 10.1 Claude Code（`-p`）の権限スコープ
 
 Claude Code は `-p`（非対話）モードでも Read/Write/Edit/Bash 等のツールを使う。対話モードと違い
-その場で人間が承認できないため、ヘッドレス実行では事前にツール許可を与えるか
-（`--allowedTools` 等）、`--dangerously-skip-permissions` のような全面許可オプションに頼ることになる。
-本設計では**後者は使わない**方針とする。代わりに:
+その場で人間が承認できないため、ヘッドレス実行では事前にツール許可を与える必要がある。
+本設計では `--dangerously-skip-permissions` のような全面許可オプションは使わない方針とする。
 
-- `cwd` は常に使い捨ての worktree（6.1.1節）とし、本体リポジトリやホームディレクトリには
+**`--allowedTools` だけでは worktree 外への書き込みを防げないことを実機（claude-code 2.1.290）で
+確認した。** `--allowedTools "Write"` のようにツール名を許可するだけだと、Writeツール自体は
+cwd外の任意パスにも書き込めてしまう（実際に `cwd` の親ディレクトリへの書き込みに成功することを
+確認した）。worktree への閉じ込めには `--restricted` フラグが必須で、これを付けると
+Read/Write/Edit 等のファイル系ツールが cwd（と `--add-dir` で追加したディレクトリ）配下に
+確認済みで制限される。`--restricted` は同時に Bash 等のコード実行系ツールを一旦すべて取り除くため、
+テスト実行に使う分だけ `--tools` で明示的に戻す。
+
+本設計では次の組み合わせを採用する（6.1.1節）:
+
+- `cwd` は常に使い捨ての worktree とし、本体リポジトリやホームディレクトリには
   Claude Code のカレントディレクトリを向けない。
-- 許可するツールは `Read` / `Grep` / `Glob` / `Write` / `Edit` と、`Bash` は
-  `LanguageConfig.test_command` に対応するコマンドのみに絞る（例: `Bash(pytest:*)` /
-  `Bash(cargo test:*)`）。任意コマンド実行・ネットワークアクセス・git操作（push/commit等）は許可しない。
-- worktree 外（`..` を含むパス等）へのファイル書き込みを許すツール設定にしない。
+- `--restricted` を付け、ファイル系ツールを worktree 配下に閉じ込める。
+- `--tools "Bash"` で Bash だけを再度ツール一覧に戻し、`--allowedTools` で
+  `Read,Grep,Glob,Write,Edit,Bash(<test_commandの先頭トークン> *)` のみを自動承認する。
+  任意コマンド実行・ネットワークアクセス・git操作（push/commit等）は許可しない。
+- `--permission-prompts none` を付け、スコープ外の呼び出しは（人間の承認を待たず）自動拒否させる。
 
 これにより、万一 LLM が意図しない／悪意に近い出力をしても、影響範囲は使い捨て worktree 内の
 ファイルシステム操作とテストコマンド実行に限定される。

@@ -712,5 +712,128 @@ def delete(
     click.echo(f"Deleted {len(targets)} record(s){suffix}. Re-run `bp collect` to re-collect them.")
 
 
+@cli.command(name="generate-tests")
+@click.option(
+    "--project", "-p",
+    "project_file",
+    required=True,
+    type=click.Path(exists=True),
+    help="Per-project YAML config file (must include an `llm:` block; see doc/test-generation.md)",
+)
+@click.option(
+    "--tracker", default=None,
+    help="Filter by tracker URL (prefix match; defaults to the project's tracker_url)",
+)
+@click.option(
+    "--status", "status_filter", default=None,
+    help="Only target records currently at this validation status "
+         "(default: any status without a confirmed reproduction, e.g. invalid/setup_failed/...)",
+)
+@click.option(
+    "--bug-id", "bug_ids", multiple=True,
+    help="Filter by exact bug ID (repeatable)",
+)
+@click.option("--limit", type=int, default=None, help="Max candidate records to process")
+@click.option("--max-attempts", type=int, default=None, help="Override llm.max_attempts from the config")
+@click.option("--dry-run", is_flag=True, help="List candidates only. No LLM calls are made.")
+@click.pass_context
+def generate_tests(
+    ctx: click.Context,
+    project_file: str,
+    tracker: str | None,
+    status_filter: str | None,
+    bug_ids: tuple[str, ...],
+    limit: int | None,
+    max_attempts: int | None,
+    dry_run: bool,
+) -> None:
+    """Generate reproduction tests for bugs whose fix has no accompanying test.
+
+    Targets records whose fix diff contains no test-file changes and whose
+    validation hasn't confirmed a FAIL->PASS reproduction yet (see
+    doc/test-generation.md). Uses the project's `llm:` config to synthesize a
+    new test, then verifies it mechanically (fails on the buggy commit, passes
+    on the fix commit) using the same worktree/reverse-patch machinery as
+    `bp collect`'s validation step. Confirmed records are upgraded to
+    validation.status="llm_valid" and keep the generated test source.
+    Records that fail to produce a confirmed test are left untouched and are
+    retried on the next run (there is currently no persisted "already tried
+    and failed" state).
+
+    \b
+    Examples:
+      bp generate-tests --project flask.yaml --dry-run
+      bp generate-tests --project flask.yaml --limit 5
+      bp generate-tests --project flask.yaml --bug-id github-pallets-flask-1234
+    """
+    from bug_prospector.adapters.llm import get_llm_adapter
+    from bug_prospector.adapters.tracker.github import GitHubAdapter
+    from bug_prospector.adapters.vcs.git import GitAdapter
+    from bug_prospector.config import ProjectConfig
+    from bug_prospector.core.storage import Storage
+    from bug_prospector.core.test_generator import TestGenerator, is_candidate
+    from bug_prospector.core.validator import Validator
+
+    dataset_dir: Path = ctx.obj["dataset_dir"]
+    project = ProjectConfig.from_file(Path(project_file))
+
+    if not project.llm.enabled:
+        raise click.UsageError(
+            "llm.enabled is false in the project config. Set `llm: {enabled: true}` to use this command."
+        )
+    if max_attempts is not None:
+        project.llm.max_attempts = max_attempts
+
+    storage = Storage(dataset_dir)
+    all_records = storage.list_all()
+
+    tracker_prefix = tracker or project.tracker_url
+    records = [r for r in all_records if r.source.tracker_url.startswith(tracker_prefix)]
+    if status_filter:
+        records = [r for r in records if (r.validation.status if r.validation else "skipped") == status_filter]
+    if bug_ids:
+        records = [r for r in records if r.id in bug_ids]
+
+    candidates = [r for r in records if is_candidate(r, project.language.test_patterns)]
+    if limit is not None:
+        candidates = candidates[:limit]
+
+    click.echo(f"{len(candidates)} candidate record(s) found (fix has no accompanying test, not yet confirmed).")
+    if not candidates:
+        return
+
+    preview = candidates[:20]
+    for r in preview:
+        s = r.validation.status if r.validation else "skipped"
+        click.echo(f"  {r.id}  (validation={s})")
+    if len(candidates) > len(preview):
+        click.echo(f"  ... and {len(candidates) - len(preview)} more")
+
+    if dry_run:
+        click.echo("[dry-run] No LLM calls made.")
+        return
+
+    slug = GitHubAdapter.parse_slug(project.tracker_url)
+    repo_slug_flat = slug.replace("/", "-")
+    local_repo = dataset_dir / "repos" / repo_slug_flat
+    GitAdapter().ensure_repo(project.repo_url, local_repo)
+
+    worktree_path = dataset_dir / "worktrees" / repo_slug_flat
+    validator = Validator(project.language, project.validation, worktree_path=worktree_path)
+    llm = get_llm_adapter(project.llm)
+    generator = TestGenerator(
+        storage=storage, validator=validator, llm=llm,
+        llm_config=project.llm, lang_config=project.language,
+    )
+
+    click.echo(f"\nGenerating reproduction tests for {len(candidates)} candidate record(s)...")
+    try:
+        confirmed, failed, _skipped = generator.run(local_repo, candidates)
+    finally:
+        validator.close()
+
+    click.echo(f"\nGenerated: {confirmed} confirmed  |  {failed} failed")
+
+
 if __name__ == "__main__":
     cli()
