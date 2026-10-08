@@ -59,6 +59,36 @@ _FEEDBACK_SUFFIX = """
 Revise the test file and try again. You may edit the file you created previously.
 """
 
+# Rust向け: RUG (Cheng et al., "Turbo LLM for Rust Unit Test Generation") の核心アイデア
+# ――型依存をノード単位に分解し、各ステップをコンパイラで検証してから積み上げる――を
+# プロンプトでの指示として移植したもの（doc/rug-integration-note.md 参照）。
+# 専用の型依存グラフ(MIRコンパイラプラグイン)は作らず、Claude Code自身のRead/Grep/Globと
+# `cargo check`での自己検証に置き換えている。
+_RUST_BOTTOM_UP_ADDENDUM = """
+
+## Rust-specific guidance: build bottom-up, verify as you go
+
+Constructing values for Rust functions (especially with generics, trait bounds, or
+nested/composed types) in one shot tends to cascade into many compile errors at
+once. Work bottom-up and verify incrementally instead:
+
+1. Identify which types/values you need to construct to exercise the buggy code
+   path (function arguments, trait objects, builder chains, etc).
+2. For each nontrivial one, starting from the simplest/most primitive dependency
+   and working up toward the type you actually need: write a small, standalone
+   snippet that constructs just that value, and check it compiles on its own
+   (`cargo check`) before moving on to something that depends on it. Reuse a
+   snippet you already got to compile rather than re-deriving it.
+3. If a type is only defined via a generic `impl<T> Trait for T where T: ...`
+   ("blanket"/proxy implementation), search the crate and resolve the trait
+   bounds for a concrete type that already satisfies them, rather than guessing.
+4. Only assemble the final test file once each piece is known to compile on its
+   own. Re-run `cargo check` as you put the pieces together.
+5. If a particular piece still won't compile after a couple of tries, fall back
+   to a simpler construction that still exercises the buggy code path rather
+   than spending unlimited attempts on it.
+"""
+
 
 class ClaudeCodeAdapter(LLMAdapter):
 
@@ -80,11 +110,18 @@ class ClaudeCodeAdapter(LLMAdapter):
             issue_body=task.issue_body,
             source_diff=task.source_diff,
         )
+        is_rust = task.language.lower() == "rust"
+        if is_rust:
+            prompt += _RUST_BOTTOM_UP_ADDENDUM
         if feedback:
             prompt += _FEEDBACK_SUFFIX.format(feedback=feedback)
 
-        bash_pattern = f"Bash({_test_command_prefix(task.test_command)} *)"
-        allowed_tools = f"{self._config.allowed_tools},{bash_pattern}"
+        bash_patterns = [f"Bash({_test_command_prefix(task.test_command)} *)"]
+        if is_rust:
+            # test_command が "cargo test" 以外(例: "cargo nextest run", ラッパー経由等)でも、
+            # ボトムアップ構築での `cargo check` による自己検証は常に使えるようにする。
+            bash_patterns.append("Bash(cargo *)")
+        allowed_tools = f"{self._config.allowed_tools}," + ",".join(bash_patterns)
 
         cmd = [
             self._config.command, "-p", prompt,

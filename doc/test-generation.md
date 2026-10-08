@@ -221,7 +221,50 @@ subprocess.run(
 - `.env` の `ANTHROPIC_API_KEY` 等、`claude` CLI 自身の認証はユーザー側の既存セットアップ
   （`claude login` 済み、またはAPIキー環境変数）にそのまま乗る。本ツールが別途キー管理を持つ必要はない。
 
-#### 6.1.2 差し替え可能な他実装（将来・任意）
+#### 6.1.2 Rust向け: RUGのボトムアップ構築アイデアの統合
+
+Rustはトレイト境界・ジェネリクス・所有権の制約が厳しく、LLMに「一発でテストを書いて」と頼むと
+コンパイルエラーが連鎖しやすい。[RUG](rug-paper-summary.md)（Cheng et al., "Turbo LLM for Rust Unit
+Test Generation"）はこの問題に対し、型依存グラフをノード単位に分解し、**葉から根へ順に、各ステップを
+コンパイラで検証してから積み上げる**（論文のAlgorithm 1 / BUILD_CONTEXT）ことで、一発生成より
+コンパイル成功率を大きく改善している（論文報告値: ボトムアップ構築だけでカバレッジ+12.90%(GPT-3.5)
+/+4.94%(GPT-4)相当の寄与）。
+
+defect-prospectorでは、RUGの価値の核心である「ボトムアップ・逐次コンパイラ検証」という**方法論だけ**を
+移植する（[rug-integration-note.md](rug-integration-note.md) で検討した3案のうち「核心アイデアのみ統合」
+を採用）。専用の型依存グラフ構築（RUGのMIRコンパイラプラグイン、`nightly-2022-12-10`固定）や
+ファジングハーネス変換・コーパス選択（Algorithm 2）は実装しない。理由:
+
+- MIRベースの静的解析はrustc内部APIに依存しツールチェーンの陳腐化・対象プロジェクトとの
+  ツールチェーン不一致リスクが大きい。bolero+libFuzzerはWindows環境での実行も不安定。
+- RUGは「クレート内のできるだけ多くの関数のカバレッジを最大化する」問題を解いているが、
+  defect-prospectorは「特定の1バグを再現するテストを1本作る」という、Issue本文とfix diffという
+  オラクル・手がかりが既にある、はるかに狭い問題を解いている。ファジングによる分岐探索の価値は
+  この設定では相対的に小さい。
+
+代わりに、`ClaudeCodeAdapter`（エージェント型で自身のRead/Grep/Globによりリポジトリを探索できる）の
+プロンプトに、RUGのAlgorithm 1と同じ方法論を**指示として**与える。`TestGenerationTask.language == "rust"`
+のとき、`_TASK_PROMPT` に次の内容を追記する:
+
+1. バグ再現に必要な型・値を特定する
+2. 依存関係の低いものから順に、単体で `cargo check` して通ることを確認してから次に進む
+   （検証済みの断片は書き直さず再利用する）
+3. `impl<T> Trait for T where T: ...` のようなブランケット実装しかない型は、境界を満たす
+   具体型をクレート内から探す（推測しない）
+4. 各断片が通ることを確認してから最終的なテストファイルを組み立てる
+5. 数回試しても通らない断片は、より単純な構築方法にフォールバックする
+
+これはRUGの「ノードごとにLLM生成→コンパイラ検証→キャッシュ」という手順を、専用グラフの代わりに
+Claude Code自身の探索・判断で代替するものである。あわせて、Rust向けの`--allowedTools`には
+`test_command`由来のパターンに加えて常に `Bash(cargo *)` を追加し、`test_command`が
+`cargo test`以外（`cargo nextest run`やラッパー経由コマンド等）でも、ボトムアップ構築中の
+`cargo check`による自己検証が必ず使えるようにする。
+
+この変更は `generate_test()` 内のプロンプト組み立てとBash許可パターンにのみ影響し、
+`Validator.validate_with_generated_test()` 側（fix:PASS / buggy:FAIL の最終確認ループ）は変更しない。
+Rust以外の言語（Python/Java）は本節の対象外で、挙動は変わらない。
+
+#### 6.1.3 差し替え可能な他実装（将来・任意）
 
 - `AnthropicAPIAdapter`（`adapters/llm/anthropic_api.py`）: 素の Anthropic Messages API を直接叩く。
   `TestGenerationTask` の全フィールドをプロンプトに文字列化して埋め込み、応答から diff を抽出して
@@ -327,7 +370,7 @@ llm:
   # api_key_env: "ANTHROPIC_API_KEY"
 ```
 
-`provider` を切り替えるだけで `AnthropicAPIAdapter` / `OpenAIAdapter`（6.1.2節、将来実装）にも
+`provider` を切り替えるだけで `AnthropicAPIAdapter` / `OpenAIAdapter`（6.1.3節、将来実装）にも
 差し替えられるようにする。`ProjectConfig` に `LLMConfig` dataclass を追加し、`ValidationConfig` と
 同様 `_from_dict` でパースする。`provider` ごとの固有設定（`claude_code:` ブロック等）は
 `LLMConfig` 内にネストしたサブdataclassとして持たせ、未対応providerの設定は無視する。
@@ -447,6 +490,6 @@ Read/Write/Edit 等のファイル系ツールが cwd（と `--add-dir` で追�
 3. `Validator.validate_with_generated_test()` と再試行・フィードバックループを実装する
    （`ClaudeCodeAdapter` で動作確認）。
 4. `bp generate-tests` CLIコマンドと `bp stats` の内訳表示更新を実装する。
-5. （フォローアップ、任意）`AnthropicAPIAdapter` / `OpenAIAdapter`（6.1.2節）を追加し、
+5. （フォローアップ、任意）`AnthropicAPIAdapter` / `OpenAIAdapter`（6.1.3節）を追加し、
    `llm.provider` 切り替えで他のLLM/APIも使えることを確認する。
 6. （フォローアップ）利用規模の拡大に応じたサンドボックス実行の強化を検討する。

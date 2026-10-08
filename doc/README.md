@@ -14,4 +14,4 @@
 | [test-rigor-comparison.md](test-rigor-comparison.md) | Rust/Java/Pythonのテスト厳密さ比較の実験設計・対象プロジェクトの選定理由・実行手順 |
 | [test-generation.md](test-generation.md) | テスト非同梱バグに対するLLMベース再現テスト生成の設計・`bp generate-tests`コマンド |
 | [rug-paper-summary.md](rug-paper-summary.md) | RUG論文（Rust向けLLMテスト生成＋ファジング）の要約 |
-| [rug-integration-note.md](rug-integration-note.md) | RUGのdefect-prospector統合スコープ検討メモ（**未決定・作業再開用**） |
+| [rug-integration-note.md](rug-integration-note.md) | RUGのdefect-prospector統合スコープ決定の記録 |

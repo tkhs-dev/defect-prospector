@@ -11,13 +11,13 @@ from bug_prospector.adapters.llm.claude_code import ClaudeCodeAdapter
 from bug_prospector.config import ClaudeCodeConfig
 
 
-def _task(test_command: str = "pytest -q") -> TestGenerationTask:
+def _task(test_command: str = "pytest -q", language: str = "python") -> TestGenerationTask:
     return TestGenerationTask(
         issue_title="Crashes on empty input",
         issue_body="Calling foo('') raises IndexError",
         source_diff="diff --git a/src/foo.py b/src/foo.py\n...",
         test_patterns=["tests/**"],
-        language="python",
+        language=language,
         test_command=test_command,
     )
 
@@ -59,6 +59,43 @@ class TestCommandConstruction:
 
         allowed_tools_idx = captured["cmd"].index("--allowedTools") + 1
         assert "Bash(cargo *)" in captured["cmd"][allowed_tools_idx]
+
+    def test_rust_task_gets_bottom_up_addendum_and_cargo_check_permission(self, monkeypatch, tmp_path):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return _completed(json.dumps({"is_error": False, "result": "ok", "modelUsage": {}}))
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        adapter = ClaudeCodeAdapter(ClaudeCodeConfig())
+        # test_command がラッパー経由(cargo以外が先頭)でも、rustなら cargo check は常に許可される
+        adapter.generate_test(tmp_path, _task(test_command="just test", language="rust"))
+
+        prompt = captured["cmd"][captured["cmd"].index("-p") + 1]
+        assert "build bottom-up, verify as you go" in prompt
+        assert "cargo check" in prompt
+
+        allowed_tools = captured["cmd"][captured["cmd"].index("--allowedTools") + 1]
+        assert "Bash(cargo *)" in allowed_tools
+        assert "Bash(just *)" in allowed_tools
+
+    def test_non_rust_task_has_no_bottom_up_addendum_or_cargo_permission(self, monkeypatch, tmp_path):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return _completed(json.dumps({"is_error": False, "result": "ok", "modelUsage": {}}))
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        adapter = ClaudeCodeAdapter(ClaudeCodeConfig())
+        adapter.generate_test(tmp_path, _task(test_command="pytest -q", language="python"))
+
+        prompt = captured["cmd"][captured["cmd"].index("-p") + 1]
+        assert "build bottom-up, verify as you go" not in prompt
+
+        allowed_tools = captured["cmd"][captured["cmd"].index("--allowedTools") + 1]
+        assert "Bash(cargo *)" not in allowed_tools
 
     def test_feedback_is_appended_to_prompt(self, monkeypatch, tmp_path):
         captured = {}

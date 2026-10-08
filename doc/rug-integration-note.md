@@ -1,8 +1,23 @@
-# RUG統合の検討メモ（未決定・作業再開用）
+# RUG統合の検討メモ（決定済み・実装済み）
 
 [rug-paper-summary.md](rug-paper-summary.md)（RUG論文の要約）を、Rust向けの `bp generate-tests`
-（[test-generation.md](test-generation.md)）改善に活かせないか検討中。**スコープはまだ決定していない。**
-別PCで作業を再開する際はこのメモから読むこと。
+（[test-generation.md](test-generation.md) 6.1.2節）に統合した経緯の記録。
+
+## 決定事項（2026-10-08）
+
+以下の3点についてユーザーの了承を得て実装済み。
+
+1. **スコープ**: 「核心アイデアのみ統合」案を採用（フル再現・独立スタンドアロン実装は見送り）。
+2. **静的解析の代替**: (a) Claude Code自身に`-p`でRead/Grep/Globと`cargo check`を使わせて探索・
+   自己検証させる方式を採用（syn等による軽量パーサ補助(b)は不採用）。
+3. **対象言語**: Rustのみ。RUGはRust固有の問題（トレイト境界・ジェネリクス）を解決する手法のため、
+   Java/Pythonには適用しない。
+
+実装は `bug_prospector/adapters/llm/claude_code.py` の `_RUST_BOTTOM_UP_ADDENDUM`
+（`TestGenerationTask.language == "rust"` の場合にプロンプトへ追記）と、Rust向けの
+`Bash(cargo *)` 許可パターン追加のみ。`Validator.validate_with_generated_test()` 側
+（fix:PASS / buggy:FAIL の最終確認ループ）は変更していない。詳細は
+[test-generation.md](test-generation.md) 6.1.2節を参照。
 
 ## 経緯
 
@@ -56,17 +71,6 @@
 - 実装の置き場所としては、既存の `bug_prospector/adapters/llm/` ／ `core/validator.py` の
   `LLMAdapter` / `validate_with_generated_test` の枠組みをそのまま使い、Rust向けにボトムアップ生成
   ステップを挟む拡張、というのが自然な統合点になりそう（まだ設計はしていない）。
-
-## 未決定事項（次回再開時にユーザーに確認すること）
-
-1. 上記「核心アイデアのみ統合」案でよいか、それとも別の方針（フル再現 / 独立スタンドアロン実装）か。
-2. 「核心アイデアのみ統合」を選ぶ場合、静的解析の代替手段は
-   (a) Claude Code自身に探索させる（追加実装コスト低、Rustバージョン非依存だがLLMの探索精度に依存）
-   (b) syn等の軽量パーサで依存グラフをPython側で補助構築する（精度は論文に近いが実装コスト高、
-       Rustバージョン非互換リスクあり）
-   のどちらにするか。
-3. Rust以外の言語（Java/Python、clap比較実験で使っている3言語）への適用は対象に含めるか、
-   RUGはRust専用の手法なので今回はRustのみに限定するか。
 
 ## 関連ファイル
 
