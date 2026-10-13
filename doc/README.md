@@ -15,3 +15,4 @@
 | [test-generation.md](test-generation.md) | テスト非同梱バグに対するLLMベース再現テスト生成の設計・`bp generate-tests`コマンド |
 | [rug-paper-summary.md](rug-paper-summary.md) | RUG論文（Rust向けLLMテスト生成＋ファジング）の要約 |
 | [rug-integration-note.md](rug-integration-note.md) | RUGのdefect-prospector統合スコープ決定の記録 |
+| [rug-implementation.md](rug-implementation.md) | RUGのどのアイデアを・どう実装したか（技術詳細） |
