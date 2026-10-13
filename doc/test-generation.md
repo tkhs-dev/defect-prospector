@@ -75,9 +75,11 @@ bp generate-tests
             満たさなければ worktree を fix_ref に reset --hard + clean -fd して生成物を消し、
             直前の実行結果（stdout/stderr の該当部分）をフィードバックとして次の試行へ渡す
     3. confirmed:
-         - worktree 内に残っている生成テストファイルの内容・パスを読み取り
-           dataset/generated-tests/<bug-id>/ に保存
-         - BugRecord.reproduction.generated_test を設定
+         - worktree 内に残っている生成テストファイルの内容・パスを読み取り、
+           BugRecord.reproduction.generated_test（source_code含む）を設定
+           ※実装注記: 当初案ではファイルとしても dataset/generated-tests/ に保存する想定だったが、
+           実装では dataset.db の BugRecord JSON に source_code を含めて保存するのみで、
+           別ファイルへの書き出しは行っていない。
          - validation.status を "llm_valid" に更新して再保存
          - worktree を reset --hard + clean -fd（次のバグのために元に戻す）
        未confirmed（試行上限到達）:
@@ -385,26 +387,36 @@ bp generate-tests [options]
 
 | オプション | 説明 |
 |---|---|
-| `--project PATH` / `-p` | プロジェクトYAML（`llm:` ブロックを含む） |
-| `--tracker PREFIX` | トラッカーURLの前方一致で絞り込み |
-| `--status STATUS` | 対象とする現在の `validation.status`（デフォルト: `invalid`） |
+| `--project PATH` / `-p` | プロジェクトYAML（`llm:` ブロックを含む。**必須**） |
+| `--tracker PREFIX` | トラッカーURLの前方一致で絞り込み（省略時はプロジェクトの`tracker_url`） |
+| `--status STATUS` | 対象とする現在の `validation.status` でさらに絞り込む（省略時は絞り込まない。候補の母集合自体は`is_candidate()`が`invalid`/`skipped`/`setup_failed`/`patch_failed`/`timeout`/`error`に自動で限定する） |
 | `--bug-id ID` | 対象を特定のバグIDに限定（複数指定可） |
-| `--limit N` | 処理するレコード数の上限 |
+| `--limit N` | 処理する候補レコード数の上限 |
 | `--max-attempts N` | `llm.max_attempts` を上書き |
-| `--dry-run` | 候補件数と想定LLM呼び出し回数のみ表示し、API呼び出しは行わない |
-| `--retry-failed` | 前回 `llm_test_failed` だったレコードも対象に含める（デフォルトはスキップ） |
+| `--dry-run` | 候補の一覧のみ表示し、LLM呼び出し（`claude` CLI 起動）は行わない |
+
+実装注記: `--retry-failed` は実装していない（10.2節「冪等性」参照。未確認の試行を永続化しないため、
+専用フラグなしに次回実行で自動的に再挑戦される）。
 
 ### 出力例
 
+実際の出力（`bug_prospector/cli/main.py` の `generate_tests` / `TestGenerator.run`）:
+
 ```
-Generating reproduction tests for 42 candidate record(s)...
-  github-pallets-flask-1522: confirmed (2 attempts)
-  github-pallets-flask-1690: failed after 3 attempts, skipping
+5 candidate record(s) found (fix has no accompanying test, not yet confirmed).
+  github-clap-rs-clap-707  (validation=setup_failed)
+  github-clap-rs-clap-901  (validation=invalid)
   ...
-Generated: 31 confirmed | 11 failed | 0 skipped
+
+Generating reproduction tests for 5 candidate record(s)...
+  [github-clap-rs-clap-901] generated test confirmed (2 attempt(s))
+  [github-clap-rs-clap-707] failed after 3 attempt(s), skipping
+
+Generated: 1 confirmed  |  1 failed
 ```
 
-`collect` の `Collected: N new | N skipped | N failed` という既存の要約スタイルに合わせる。
+`collect` の `Collected: N new | N skipped | N failed` に寄せた要約スタイルだが、`skipped`
+（候補にすらならなかった件数）は要約行には出さず、冒頭の候補一覧でのみ分かる。
 
 ## 9. `bp stats` への反映
 
@@ -458,13 +470,15 @@ Read/Write/Edit 等のファイル系ツールが cwd（と `--add-dir` で追�
   通常の `Validator._run_tests`）はネットワーク／ファイルシステムへのアクセスを制限しない。
   利用規模が拡大する場合はコンテナ等でのサンドボックス実行を追加検討する
   （v1ではスコープ外とし、ドキュメントで明示するに留める）。
-- **生成物の扱い**: 生成テストは `dataset/generated-tests/` 配下にのみ保存し、元リポジトリへの
-  自動コミット・push は行わない。
-- **コスト**: `bp collect` から独立したオプトインコマンドとし、`--dry-run` で事前に候補件数と
-  想定コストを見積もれるようにする。`--limit` / `--status` / `--tracker` / `--bug-id` による絞り込みで
+- **生成物の扱い**: 生成テストのソースは `BugRecord.reproduction.generated_test.source_code` として
+  `dataset.db` にのみ保存し、元リポジトリへの自動コミット・push は行わない
+  （実装注記: 別ファイルへの書き出しは行っていない）。
+- **コスト**: `bp collect` から独立したオプトインコマンドとし、`--dry-run` で事前に候補件数を
+  確認できるようにする。`--limit` / `--status` / `--tracker` / `--bug-id` による絞り込みで
   実験規模を制御する（`bp delete` の既存フィルタ設計と一貫させる）。
-- **冪等性**: 既に `confirmed=True` のレコードは再実行時に自動スキップし、失敗レコードは
-  `--retry-failed` を明示しない限りスキップする。
+- **冪等性**: 既に `confirmed=True` のレコードは再実行時に自動スキップする。未確認の試行は
+  永続化しないため（8節参照）、失敗したレコードは明示的な `--retry-failed` フラグなしに
+  次回実行時も自動的に再挑戦の対象になる。
 
 ## 11. リスク・オープン課題
 

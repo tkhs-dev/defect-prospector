@@ -130,10 +130,20 @@ coverage:
   report_path: ""                 # 空なら言語アダプタのデフォルトパスを使う
                                    # （マルチモジュールJava等でデフォルトが合わない場合に上書き）
   timeout: 1200
+
+llm:
+  enabled: false                  # true で bp generate-tests が使用可能になる
+  provider: claude_code           # 現状はclaude_codeのみ（claude -p をサブプロセス起動）
+  max_attempts: 3                 # 1レコードあたりの生成・検証リトライ上限
+  max_context_chars: 20000        # プロンプトに埋め込むIssue本文/diffの文字数上限
+  claude_code:
+    command: "claude"             # PATH上のclaudeコマンド名、またはフルパス
+    allowed_tools: "Read,Grep,Glob,Write,Edit"
+    timeout: 600
 ```
 
 `--project` を使わない簡易実行もできる（`bp collect --tracker-url <url> --token <token>`）。
-この場合 `validation`/`coverage` は無効のまま、最小限の設定で収集する。
+この場合 `validation`/`coverage`/`llm` は無効のまま、最小限の設定で収集する。
 
 ## CLIコマンド
 
@@ -188,6 +198,43 @@ bp delete --tracker https://github.com/BurntSushi/ripgrep --status error --dry-r
 bp delete --tracker https://github.com/BurntSushi/ripgrep --status error --yes
 ```
 
+### `bp generate-tests`
+
+テストが同梱されていない（fixのdiffにテストファイルの変更がない）ため `invalid` 等のまま
+バグとして確認できていないレコードに対し、LLM（既定では `claude -p`、[Claude Code
+CLI](https://docs.claude.com/claude-code) の非対話モード）で再現テストを合成し、
+fixコミットでPASS・buggyコミット（ソース差分のみ逆パッチ）でFAILすることを機械的に確認した
+うえで `validation.status: llm_valid` に昇格させる。設計・実装の詳細は
+[doc/test-generation.md](doc/test-generation.md) を参照。
+
+```
+bp generate-tests --project <project>.yaml [--tracker <URLの前方一致>] [--status <validationステータス>]
+                   [--bug-id <ID>]... [--limit N] [--max-attempts N] [--dry-run]
+```
+
+- プロジェクトYAMLに `llm.enabled: true` が必要（既定は無効）。
+- 対象は「buggy/fixコミットが両方解決済み」「fixのdiffにテスト変更を含まない」「validationが
+  まだFAIL→PASSを確認できていない状態（`invalid`/`setup_failed`/`patch_failed`/`timeout`/`error`/
+  `skipped`）」「未確認の生成テストで既にconfirmed済みでない」をすべて満たすレコード。
+- `--dry-run` で候補一覧のみ表示し、LLM呼び出しは行わない。
+- Rust（`language.type: rust`）のレコードでは、[RUG論文](doc/rug-paper-summary.md)の
+  「型依存をノード単位に分解し、コンパイラ検証しながらボトムアップに積み上げる」という
+  アイデアをプロンプトに取り込み、`cargo check` による自己検証を促す（詳細は
+  [doc/test-generation.md](doc/test-generation.md) 6.1.2節、検討の経緯は
+  [doc/rug-integration-note.md](doc/rug-integration-note.md)）。Python/Javaは対象外で挙動は変わらない。
+- 失敗（未確認のまま試行上限到達）したレコードの状態は永続化されないため、専用フラグなしに
+  次回実行で自動的に再挑戦の対象になる。
+- 生成テストのソースは別ファイルではなく `BugRecord.reproduction.generated_test.source_code`
+  として `dataset.db` にのみ保存される。
+
+```bash
+# 候補件数と対象レコードのみ確認（LLM呼び出しなし）
+bp generate-tests --project clap.yaml --dry-run
+
+# 実際に生成・検証する（クローン済みリポジトリ・cargo等のツールチェインが必要）
+bp generate-tests --project clap.yaml --limit 5
+```
+
 ## 出力されるメトリクスの意味
 
 ### Validation status（検証ステータス）
@@ -195,6 +242,7 @@ bp delete --tracker https://github.com/BurntSushi/ripgrep --status error --yes
 | ステータス | 意味 |
 |---|---|
 | `valid` | buggy状態でFAILし、fix状態でPASSしたテストが1件以上ある＝バグを検出する回帰テストが機能している |
+| `llm_valid` | 元のfixにはテストが無かったが、`bp generate-tests` がLLMで合成した再現テストでFAIL→PASSを確認できた（`valid`とは出自が異なるため区別している。[doc/test-generation.md](doc/test-generation.md)参照） |
 | `invalid` | 逆パッチしても差分に反応するテストが無かった（両方PASS/両方FAIL）＝そのテストではこのバグを再現できない |
 | `patch_failed` | 逆パッチの適用に失敗した |
 | `setup_failed` | 環境構築コマンド（`setup_commands`）が失敗した |
@@ -243,6 +291,9 @@ worktrees/<repo-slug>/                # 検証用の永続ワークツリー（v
 patches/<project_id>/<bug_id>.patch   # 適用した逆パッチ（save_test_output等と同様に検証時のみ）
 test-logs/<project_id>/<bug_id>-{fix,buggy}.log   # テスト出力（save_test_output: true時）
 ```
+
+`bp generate-tests` が合成した再現テストのソースは別ファイルには書き出さず、
+`BugRecord.reproduction.generated_test.source_code` として `dataset.db` 内にのみ保存される。
 
 ## 実験対象プロジェクト
 
