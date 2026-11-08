@@ -712,6 +712,55 @@ def delete(
     click.echo(f"Deleted {len(targets)} record(s){suffix}. Re-run `bp collect` to re-collect them.")
 
 
+@cli.command(name="export-tests")
+@click.option("--tracker", default=None, help="Filter by tracker URL (prefix match)")
+@click.option(
+    "--bug-id", "bug_ids", multiple=True,
+    help="Filter by exact bug ID (repeatable)",
+)
+@click.option(
+    "--out-dir", default=None, type=click.Path(file_okay=False),
+    help="Output directory (default: <dataset-dir>/generated-tests)",
+)
+@click.pass_context
+def export_tests(
+    ctx: click.Context,
+    tracker: str | None,
+    bug_ids: tuple[str, ...],
+    out_dir: str | None,
+) -> None:
+    """Export LLM-generated reproduction tests (from `bp generate-tests`) as files.
+
+    Writes each record's reproduction.generated_test.source_code to
+    <out-dir>/<bug_id>/<file_path>, plus a meta.json with the issue URL,
+    buggy/fix commits, model and attempt count. Existing files are overwritten.
+
+    \b
+    Examples:
+      bp export-tests
+      bp export-tests --tracker https://github.com/clap-rs/clap --out-dir ./clap-tests
+      bp export-tests --bug-id github-clap-rs-clap-4326
+    """
+    from bug_prospector.core.storage import Storage
+    from bug_prospector.core.test_generator import export_generated_tests
+
+    dataset_dir: Path = ctx.obj["dataset_dir"]
+    target_dir = Path(out_dir) if out_dir else dataset_dir / "generated-tests"
+
+    records = Storage(dataset_dir).list_all()
+    if tracker:
+        records = [r for r in records if r.source.tracker_url.startswith(tracker)]
+    if bug_ids:
+        records = [r for r in records if r.id in bug_ids]
+
+    exported = export_generated_tests(records, target_dir)
+    click.echo(f"Exported {len(exported)} generated test(s) to {target_dir}")
+    for r, path in exported:
+        g = r.reproduction.generated_test
+        status = "confirmed" if g.confirmed else "unconfirmed"
+        click.echo(f"  {r.id}  ({status}, {g.attempts} attempt(s))  {path.relative_to(target_dir)}")
+
+
 @cli.command(name="generate-tests")
 @click.option(
     "--project", "-p",
@@ -820,7 +869,8 @@ def generate_tests(
 
     worktree_path = dataset_dir / "worktrees" / repo_slug_flat
     validator = Validator(project.language, project.validation, worktree_path=worktree_path)
-    llm = get_llm_adapter(project.llm)
+    usage_log_path = dataset_dir / "llm-usage" / f"{project.project_id}.jsonl"
+    llm = get_llm_adapter(project.llm, usage_log_path=usage_log_path)
     generator = TestGenerator(
         storage=storage, validator=validator, llm=llm,
         llm_config=project.llm, lang_config=project.language,
@@ -831,8 +881,40 @@ def generate_tests(
         confirmed, failed, _skipped = generator.run(local_repo, candidates)
     finally:
         validator.close()
+        _print_llm_usage(getattr(llm, "usage_records", []), getattr(generator, "outcomes", {}), usage_log_path)
 
     click.echo(f"\nGenerated: {confirmed} confirmed  |  {failed} failed")
+
+
+def _print_llm_usage(usage_records: list[dict], outcomes: dict[str, tuple[bool, int]], log_path: Path) -> None:
+    """bp generate-tests 実行後に、レコード単位のトークン使用量・コストを表示する。"""
+    if not usage_records:
+        return
+    keys = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    per_bug: dict[str, dict] = {}
+    for u in usage_records:
+        agg = per_bug.setdefault(u["bug_id"], {"calls": 0, "cost": 0.0, "turns": 0, **{k: 0 for k in keys}})
+        agg["calls"] += 1
+        agg["cost"] += u.get("total_cost_usd") or 0.0
+        agg["turns"] += u.get("num_turns") or 0
+        for k in keys:
+            agg[k] += u.get(k) or 0
+
+    click.echo("\nLLM usage (per record):")
+    header = ("bug_id", "result", "calls", "turns", "input", "output", "cache_w", "cache_r", "cost_usd")
+    fmt = "  {:<36} {:<10} {:>5} {:>5} {:>8} {:>8} {:>10} {:>11} {:>9}"
+    click.echo(fmt.format(*header))
+    total = {"calls": 0, "cost": 0.0, "turns": 0, **{k: 0 for k in keys}}
+    for bug_id, agg in per_bug.items():
+        ok, _ = outcomes.get(bug_id, (False, 0))
+        click.echo(fmt.format(
+            bug_id, "confirmed" if ok else "failed", agg["calls"], agg["turns"],
+            *(agg[k] for k in keys), f"{agg['cost']:.4f}",
+        ))
+        for k in total:
+            total[k] += agg[k]
+    click.echo(fmt.format("TOTAL", "", total["calls"], total["turns"], *(total[k] for k in keys), f"{total['cost']:.4f}"))
+    click.echo(f"  (raw per-call log: {log_path})")
 
 
 if __name__ == "__main__":

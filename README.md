@@ -224,8 +224,10 @@ bp generate-tests --project <project>.yaml [--tracker <URLの前方一致>] [--s
   [doc/rug-integration-note.md](doc/rug-integration-note.md)）。Python/Javaは対象外で挙動は変わらない。
 - 失敗（未確認のまま試行上限到達）したレコードの状態は永続化されないため、専用フラグなしに
   次回実行で自動的に再挑戦の対象になる。
-- 生成テストのソースは別ファイルではなく `BugRecord.reproduction.generated_test.source_code`
-  として `dataset.db` にのみ保存される。
+- 生成テストのソースは `BugRecord.reproduction.generated_test.source_code` として
+  `dataset.db` に保存される。ファイルとして確認したい場合は `bp export-tests` で書き出す。
+- `claude -p` 1回ごとのトークン使用量・コスト・ターン数は
+  `<dataset-dir>/llm-usage/<project_id>.jsonl` に追記され、実行終了時にレコード単位の集計表が表示される。
 
 ```bash
 # 候補件数と対象レコードのみ確認（LLM呼び出しなし）
@@ -233,6 +235,21 @@ bp generate-tests --project clap.yaml --dry-run
 
 # 実際に生成・検証する（クローン済みリポジトリ・cargo等のツールチェインが必要）
 bp generate-tests --project clap.yaml --limit 5
+```
+
+### `bp export-tests`
+
+```
+bp export-tests [--tracker <URLの前方一致>] [--bug-id <ID>]... [--out-dir <dir>]
+```
+
+`bp generate-tests` が `dataset.db` に保存した再現テストをファイルとして書き出す。
+出力先（デフォルト `<dataset-dir>/generated-tests`）の下に、レコードごとに
+`<bug_id>/<生成時のテストファイルパス>` と、Issue URL・buggy/fixコミット・モデル・試行回数等を
+記録した `<bug_id>/meta.json` を作る。既存ファイルは上書きする。
+
+```bash
+bp export-tests --tracker https://github.com/clap-rs/clap
 ```
 
 ## 出力されるメトリクスの意味
@@ -290,10 +307,13 @@ repos/<repo-slug>/                    # リポジトリのローカルクロー�
 worktrees/<repo-slug>/                # 検証用の永続ワークツリー（validation.enabled時）
 patches/<project_id>/<bug_id>.patch   # 適用した逆パッチ（save_test_output等と同様に検証時のみ）
 test-logs/<project_id>/<bug_id>-{fix,buggy}.log   # テスト出力（save_test_output: true時）
+llm-usage/<project_id>.jsonl          # bp generate-tests の claude -p 呼び出しごとのトークン使用量・コスト
+generated-tests/<bug_id>/             # bp export-tests の出力（テストファイル + meta.json）
 ```
 
-`bp generate-tests` が合成した再現テストのソースは別ファイルには書き出さず、
-`BugRecord.reproduction.generated_test.source_code` として `dataset.db` 内にのみ保存される。
+`bp generate-tests` が合成した再現テストのソースの正本は `dataset.db` 内の
+`BugRecord.reproduction.generated_test.source_code` で、`generated-tests/` は
+`bp export-tests` で書き出したコピー。
 
 ## 実験対象プロジェクト
 

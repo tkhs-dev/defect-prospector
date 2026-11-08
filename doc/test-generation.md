@@ -188,7 +188,8 @@ subprocess.run(
         "--permission-prompts", "none",   # 非対話実行なので、プロンプトが必要な呼び出しは自動拒否させる
         "--restricted",                   # Bash等のコード実行系ツールを一旦すべて外し、
                                            # 残るファイル系ツール(Write/Edit/Read等)をcwd配下に閉じ込める
-        "--tools", "Bash",                 # --restricted で外された Bash だけ再度ツール一覧に戻す
+        "--tools", "Read,Grep,Glob,Write,Edit,Bash",  # 利用可能ツールの完全なリスト。Bash だけを渡すと
+                                           # Read/Write/Edit まで消える（2.1.317で確認）
         "--allowedTools", f"Read,Grep,Glob,Write,Edit,Bash({test_command_prefix} *)",
     ],
     cwd=worktree,
@@ -453,7 +454,9 @@ Read/Write/Edit 等のファイル系ツールが cwd（と `--add-dir` で追�
 - `cwd` は常に使い捨ての worktree とし、本体リポジトリやホームディレクトリには
   Claude Code のカレントディレクトリを向けない。
 - `--restricted` を付け、ファイル系ツールを worktree 配下に閉じ込める。
-- `--tools "Bash"` で Bash だけを再度ツール一覧に戻し、`--allowedTools` で
+- `--tools "Read,Grep,Glob,Write,Edit,Bash"` でツール一覧を明示し（`--tools` は追加ではなく
+  「利用可能なツールの完全なリスト」の指定なので、`--tools "Bash"` だけだとファイル系ツールが
+  使えなくなりテストファイルを書けない。claude-code 2.1.317 で確認）、`--allowedTools` で
   `Read,Grep,Glob,Write,Edit,Bash(<test_commandの先頭トークン> *)` のみを自動承認する。
   任意コマンド実行・ネットワークアクセス・git操作（push/commit等）は許可しない。
 - `--permission-prompts none` を付け、スコープ外の呼び出しは（人間の承認を待たず）自動拒否させる。

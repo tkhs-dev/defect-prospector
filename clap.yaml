@@ -60,3 +60,14 @@ coverage:
   # 毎回ワークスペース全体をコンパイルし直すことになる。dev-dependencies
   # （benchmark等）を含めると数分かかることがあるため長めに設定。
   timeout: 1200
+
+llm:
+  # bp generate-tests 用（doc/test-generation.md 参照）
+  enabled: true
+  provider: claude_code
+  max_attempts: 3
+  max_context_chars: 20000
+  claude_code:
+    command: "claude"
+    allowed_tools: "Read,Grep,Glob,Write,Edit"
+    timeout: 900

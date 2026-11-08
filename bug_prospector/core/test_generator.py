@@ -7,9 +7,10 @@ FAIL→PASS を確認できていないレコード。bp collect とは別のオ
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from ..adapters.llm.base import LLMAdapter, TestGenerationTask
 from ..config import LanguageConfig, LLMConfig
@@ -59,6 +60,7 @@ class TestGenerator:
         Returns: (confirmed, failed, skipped)
         """
         confirmed = failed = skipped = 0
+        self.outcomes: dict[str, tuple[bool, int]] = {}
         for record in records:
             if not is_candidate(record, self._lang.test_patterns):
                 skipped += 1
@@ -77,6 +79,7 @@ class TestGenerator:
                 max_attempts=self._llm_config.max_attempts,
             )
 
+            self.outcomes[record.id] = (result.confirmed, result.attempts)
             if result.confirmed:
                 record.reproduction.generated_test = result.generated_test
                 record.validation = (
@@ -102,6 +105,7 @@ class TestGenerator:
             test_patterns=self._lang.test_patterns,
             language=self._lang.type,
             test_command=self._lang.test_command,
+            bug_id=record.id,
         )
 
 
@@ -109,3 +113,48 @@ def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "\n... [truncated]"
+
+
+def export_generated_tests(records: list[BugRecord], out_dir: Path) -> list[tuple[BugRecord, Path]]:
+    """
+    reproduction.generated_test を持つレコードのテストソースをファイルとして書き出す（bp export-tests）。
+
+    出力: <out_dir>/<bug_id>/<generated_test.file_path> と、同じディレクトリの meta.json。
+    Returns: 書き出した (レコード, テストファイルのパス) のリスト。
+    """
+    exported: list[tuple[BugRecord, Path]] = []
+    for record in records:
+        g = record.reproduction.generated_test
+        if g is None:
+            continue
+        bug_dir = out_dir / record.id
+        test_path = bug_dir / _safe_relative_path(g.file_path)
+        test_path.parent.mkdir(parents=True, exist_ok=True)
+        test_path.write_text(g.source_code, encoding="utf-8")
+
+        meta = {
+            "bug_id": record.id,
+            "issue_url": record.source.issue_url,
+            "title": record.source.title,
+            "buggy_commit": record.repository.buggy_commit,
+            "fix_commit": record.repository.fix_commit,
+            "validation_status": record.validation.status if record.validation else None,
+            "file_path": g.file_path,
+            "function_name": g.function_name,
+            "framework": g.framework,
+            "provider": g.provider,
+            "model": g.model,
+            "attempts": g.attempts,
+            "confirmed": g.confirmed,
+            "generated_at": g.generated_at.isoformat(),
+        }
+        (bug_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        exported.append((record, test_path))
+    return exported
+
+
+def _safe_relative_path(file_path: str) -> Path:
+    """LLMが決めたパスが出力先ディレクトリの外を指さないよう、絶対パス・".."を取り除く。"""
+    parts = [p for p in PurePosixPath(file_path.replace("\\", "/")).parts if p not in ("", ".", "..", "/")]
+    parts = [p for p in parts if not p.endswith(":")]  # Windowsのドライブ指定（"C:"）
+    return Path(*parts) if parts else Path("generated_test")

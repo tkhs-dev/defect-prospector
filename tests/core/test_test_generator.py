@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -17,7 +18,7 @@ from bug_prospector.core.models.record import (
     VALID,
     ValidationResult,
 )
-from bug_prospector.core.test_generator import is_candidate
+from bug_prospector.core.test_generator import export_generated_tests, is_candidate
 
 TEST_PATTERNS = ["tests/**", "test_*.py", "*_test.py"]
 
@@ -111,3 +112,37 @@ class TestIsCandidate:
         r = _record(diff=_DIFF_SOURCE_ONLY)
         r.validation = None
         assert is_candidate(r, TEST_PATTERNS) is True
+
+
+def _generated(file_path: str = "tests/test_repro.py") -> GeneratedTestInfo:
+    return GeneratedTestInfo(
+        file_path=file_path, function_name="test_repro", source_code="def test_repro():\n    assert True\n",
+        framework="python", provider="claude_code", model="claude-opus-5-5",
+        attempts=2, confirmed=True, generated_at=datetime.now(timezone.utc),
+    )
+
+
+class TestExportGeneratedTests:
+    def test_writes_test_file_and_meta(self, tmp_path):
+        record = _record(generated_test=_generated())
+        exported = export_generated_tests([record], tmp_path)
+
+        test_path = tmp_path / "bug-1" / "tests" / "test_repro.py"
+        assert exported == [(record, test_path)]
+        assert test_path.read_text(encoding="utf-8") == "def test_repro():\n    assert True\n"
+        meta = json.loads((tmp_path / "bug-1" / "meta.json").read_text(encoding="utf-8"))
+        assert meta["bug_id"] == "bug-1"
+        assert meta["fix_commit"] == "b"
+        assert meta["attempts"] == 2
+        assert meta["model"] == "claude-opus-5-5"
+
+    def test_skips_records_without_generated_test(self, tmp_path):
+        assert export_generated_tests([_record()], tmp_path) == []
+        assert not any(tmp_path.iterdir())
+
+    @pytest.mark.parametrize("file_path", ["../../evil.py", "/abs/evil.py", r"C:\abs\evil.py"])
+    def test_path_cannot_escape_bug_dir(self, tmp_path, file_path):
+        record = _record(generated_test=_generated(file_path))
+        [(_, path)] = export_generated_tests([record], tmp_path)
+        assert path.resolve().is_relative_to((tmp_path / "bug-1").resolve())
+        assert path.name == "evil.py"

@@ -19,6 +19,7 @@ class TestGenerationTask:
     language: str
     test_command: str
     sample_test_files: dict[str, str] = field(default_factory=dict)  # 既存テストのサンプル(path -> 内容)
+    bug_id: str = ""              # 使用量ログ等でレコードを識別するためのID
 
 
 class LLMAdapter(ABC):

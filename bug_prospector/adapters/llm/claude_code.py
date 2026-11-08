@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ...config import ClaudeCodeConfig
@@ -94,8 +95,12 @@ class ClaudeCodeAdapter(LLMAdapter):
 
     provider = "claude_code"
 
-    def __init__(self, config: ClaudeCodeConfig) -> None:
+    def __init__(self, config: ClaudeCodeConfig, usage_log_path: Path | None = None) -> None:
         self._config = config
+        # claude -p 1回ごとのトークン使用量・コスト（--output-format json の usage 等）。
+        # usage_log_path が指定されていれば JSONL として追記もする。
+        self._usage_log_path = usage_log_path
+        self.usage_records: list[dict] = []
 
     def generate_test(
         self,
@@ -128,7 +133,9 @@ class ClaudeCodeAdapter(LLMAdapter):
             "--output-format", "json",
             "--permission-prompts", "none",
             "--restricted",
-            "--tools", "Bash",
+            # --tools は「利用可能なツールの完全なリスト」なので、Bash だけでなく
+            # Read/Write/Edit 等も明示しないとファイルを書けなくなる（2.1.317で確認）
+            "--tools", f"{self._config.allowed_tools},Bash",
             "--allowedTools", allowed_tools,
         ]
 
@@ -141,6 +148,7 @@ class ClaudeCodeAdapter(LLMAdapter):
             raise RuntimeError(f"claude -p timed out after {self._config.timeout}s") from e
 
         data = _parse_json(result.stdout)
+        self._record_usage(task, data, result.returncode)
         if data is None:
             raise RuntimeError(
                 f"claude -p produced no parseable JSON output "
@@ -154,6 +162,32 @@ class ClaudeCodeAdapter(LLMAdapter):
             logger.debug(f"  claude -p: {len(denials)} permission denial(s) (expected for out-of-scope calls)")
 
         return _extract_model(data)
+
+    def _record_usage(self, task: TestGenerationTask, data: dict | None, returncode: int) -> None:
+        data = data or {}
+        usage = data.get("usage") or {}
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "bug_id": task.bug_id,
+            "model": _extract_model(data),
+            "exit_code": returncode,
+            "is_error": bool(data.get("is_error")) if data else True,
+            "num_turns": data.get("num_turns"),
+            "duration_ms": data.get("duration_ms"),
+            "total_cost_usd": data.get("total_cost_usd"),
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+            "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),
+            "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
+            "model_usage": data.get("modelUsage"),
+            "permission_denials": data.get("permission_denials") or [],
+            "result_excerpt": str(data.get("result", ""))[-2000:],
+        }
+        self.usage_records.append(entry)
+        if self._usage_log_path:
+            self._usage_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._usage_log_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def _test_command_prefix(test_command: str) -> str:
