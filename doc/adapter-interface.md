@@ -208,46 +208,6 @@ class LanguageAdapter(ABC):
 
 ---
 
-## 4.2 CoverageAdapter
-
-Rust/Java/Pythonのテスト厳格さ比較（[test-rigor-comparison.md](test-rigor-comparison.md)）のために追加した、
-言語ごとのカバレッジ計測ツールを抽象化するアダプタ。`LanguageAdapter` とは独立したカテゴリで、
-`ProjectConfig.coverage.enabled=true` の場合のみ `Validator` から利用される。
-
-```python
-# bug_prospector/adapters/coverage/base.py
-class CoverageAdapter(ABC):
-
-    @property
-    @abstractmethod
-    def tool_name(self) -> str: ...
-
-    @abstractmethod
-    def default_command(self, repo_path: Path) -> str:
-        """カバレッジ計測込みでテストスイートを実行するコマンドを返す"""
-
-    @abstractmethod
-    def default_report_path(self, repo_path: Path) -> Path:
-        """コマンド実行後に生成されるレポートファイルの絶対パスを返す"""
-
-    @abstractmethod
-    def parse_report(self, report_path: Path) -> ParsedCoverage:
-        """カバレッジレポートを解析する"""
-```
-
-| クラス | ファイル | 対応言語 / ツール |
-|---|---|---|
-| `CargoLlvmCovAdapter` | `adapters/coverage/rust.py` | Rust / cargo-llvm-cov（`--workspace --cobertura` 形式出力。`--workspace` を付けないとルートパッケージしか計装されないため必須） |
-| `JacocoAdapter` | `adapters/coverage/java.py` | Java / JaCoCo（Maven: フルGAV座標でのアドホック起動 / Gradle: `jacocoTestReport`、プラグイン未適用だと失敗する） |
-| `CoveragePyAdapter` | `adapters/coverage/python.py` | Python / coverage.py（pytest-cov経由。`coverage xml` の出力はCobertura互換のため `cobertura.py` のパーサをそのまま再利用） |
-
-レポートのパース処理（Cobertura/JaCoCoそれぞれのXML形式）は `adapters/coverage/cobertura.py` /
-`adapters/coverage/jacoco.py` に分離してあり、`ParsedCoverage`（ファイル別・行別のカバー有無と
-プロジェクト全体の行/分岐カバレッジ率）を返す。diff coverage（修正差分が触れた行のカバー率）の算出は
-`core/coverage.py` の `CoverageRunner` が担う。
-
----
-
 ## 5. AdapterRegistry
 
 ```python

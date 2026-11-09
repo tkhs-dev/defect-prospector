@@ -79,43 +79,6 @@ class TestRunResult:
 
 
 # ---------------------------------------------------------------------------
-# カバレッジ計測結果
-# ---------------------------------------------------------------------------
-
-# status 定数
-MEASURED = "measured"
-COVERAGE_ERROR = "error"
-UNSUPPORTED = "unsupported"
-
-
-@dataclass
-class CoverageResult:
-    tool: str            # "cargo-llvm-cov" / "jacoco" 等
-    status: str
-    overall_line_rate: float | None = None     # プロジェクト全体の行カバレッジ率 (0.0-1.0)
-    overall_branch_rate: float | None = None   # プロジェクト全体の分岐カバレッジ率 (0.0-1.0)
-    # diff coverage: このバグの修正差分が触れた行のうち、
-    # buggyコミット時点の既存テストで計装・カバーされていた行数
-    diff_lines_total: int = 0
-    diff_lines_covered: int = 0
-    diff_coverage_rate: float | None = None    # diff_lines_covered / diff_lines_total
-    error: str | None = None
-
-    @classmethod
-    def from_dict(cls, d: dict) -> CoverageResult:
-        return cls(
-            tool=d["tool"],
-            status=d["status"],
-            overall_line_rate=d.get("overall_line_rate"),
-            overall_branch_rate=d.get("overall_branch_rate"),
-            diff_lines_total=d.get("diff_lines_total", 0),
-            diff_lines_covered=d.get("diff_lines_covered", 0),
-            diff_coverage_rate=d.get("diff_coverage_rate"),
-            error=d.get("error"),
-        )
-
-
-# ---------------------------------------------------------------------------
 # LLMによる再現テスト生成結果
 # ---------------------------------------------------------------------------
 
@@ -167,7 +130,6 @@ class ValidationResult:
     status: str
     fix_result: TestRunResult | None = None
     buggy_result: TestRunResult | None = None
-    coverage: CoverageResult | None = None
 
     @property
     def is_confirmed_bug(self) -> bool:
@@ -178,8 +140,8 @@ class ValidationResult:
         return cls(
             status=d["status"],
             fix_result=TestRunResult.from_dict(d["fix_result"]) if d.get("fix_result") else None,
+            # 旧データに残っている "coverage" キー（カバレッジ計測は削除済み）は無視する
             buggy_result=TestRunResult.from_dict(d["buggy_result"]) if d.get("buggy_result") else None,
-            coverage=CoverageResult.from_dict(d["coverage"]) if d.get("coverage") else None,
         )
 
 

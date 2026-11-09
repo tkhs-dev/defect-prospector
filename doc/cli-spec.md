@@ -309,12 +309,7 @@ bp config init --output ~/my-bp.yaml  # 指定パスに生成
 収集済みデータセットの統計情報を表示する（言語・トラッカー別件数、fixサイズ、テストケース単位の
 FAIL→PASS集計等）。`bp stats [--tracker PREFIX] [--json]`。
 
-### 11.2 compare
+### 11.2 その他
 
-[test-rigor-comparison.md](test-rigor-comparison.md) のために追加。`reproduction.environment.language`
-でグルーピングし、PRのテスト変更率・テスト重視度（`functions_changed`/`tests_added`等）・
-diff coverage・全体カバレッジ率等を言語間で比較する。
-
-```
-bp compare [--languages rust,java,python] [--json]
-```
+`delete`（収集済みレコードの削除）・`generate-tests`（LLMによる再現テスト生成）・
+`export-tests`（生成テストのファイル書き出し）が追加されている。使い方は [../README.md](../README.md) を参照。

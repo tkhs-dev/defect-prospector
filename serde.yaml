@@ -45,17 +45,3 @@ validation:
   save_test_output: true
   # true にすると失敗したテストケース名をログに出力する
   show_failed_tests: true
-
-coverage:
-  # true にすると、バグ状態（逆パッチ適用後）のワークツリーで
-  # cargo-llvm-cov を実行し、修正差分が触れた行の diff coverage と
-  # プロジェクト全体のカバレッジ率を記録する。
-  # 事前に `cargo install cargo-llvm-cov` が必要。
-  # いったん無効化中（収集の速度・安定性を優先。必要になったら true に戻す）
-  enabled: false
-  tool: cargo-llvm-cov
-  # command / report_path は省略時、言語アダプタのデフォルトを使う
-  # (command: "cargo llvm-cov --workspace --cobertura --output-path target/llvm-cov-cobertura.xml")
-  # 永続worktreeは各Issue処理後に target/ ごと git clean -fd されるため、
-  # 毎回ワークスペース全体をコンパイルし直すことになる。長めに設定。
-  timeout: 1200

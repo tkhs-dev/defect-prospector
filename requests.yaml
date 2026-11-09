@@ -48,14 +48,3 @@ validation:
   save_test_output: true
   # true にすると失敗したテストケース名をログに出力する
   show_failed_tests: true
-
-coverage:
-  # true にすると、バグ状態（逆パッチ適用後）のワークツリーで
-  # pytest-cov（coverage.py）を実行し、diff coverage とプロジェクト全体の
-  # カバレッジ率を記録する。
-  # いったん無効化中（収集の速度・安定性を優先。必要になったら true に戻す）
-  enabled: false
-  tool: coverage.py
-  command: "pytest --cov=requests --cov-report=xml:coverage.xml -q"
-  # report_path は省略時 "coverage.xml"（リポジトリルート）が使われる
-  timeout: 600

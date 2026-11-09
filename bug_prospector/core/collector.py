@@ -78,7 +78,6 @@ class Collector:
         validator = Validator(
             project.language, val,
             worktree_path=worktree_path, patch_dir=patch_dir, test_log_dir=test_log_dir,
-            coverage_config=project.coverage,
         )
 
         if not dry_run:

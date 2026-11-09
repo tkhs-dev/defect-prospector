@@ -68,10 +68,6 @@ def cli(ctx: click.Context, dataset_dir: str, verbose: bool) -> None:
     metavar="DATE",
     help="Override: collect issues created on/after DATE (ISO 8601)",
 )
-@click.option(
-    "--no-validation", is_flag=True,
-    help="Skip test validation and coverage (no build / test run). Only diff-based metrics are recorded.",
-)
 @click.option("--dry-run", is_flag=True, help="Preview only. Nothing is saved.")
 @click.pass_context
 def collect(
@@ -83,7 +79,6 @@ def collect(
     labels: str | None,
     limit: int | None,
     since: str | None,
-    no_validation: bool,
     dry_run: bool,
 ) -> None:
     """Collect bug records.
@@ -95,7 +90,6 @@ def collect(
     Examples:
       bp collect --project flask.yaml
       bp collect --project flask.yaml --limit 10 --dry-run
-      bp collect --project flask.yaml --no-validation
       bp collect --tracker-url https://github.com/pallets/flask --token $TOKEN
     """
     from bug_prospector.config import ProjectConfig, SearchConfig, TrackerAuth
@@ -138,11 +132,6 @@ def collect(
                 limit=limit,
             ),
         )
-
-    if no_validation:
-        # 静的指標（diff解析）のみで高速に収集する（doc/rust-vs-java-testing.md 2.1節）
-        project.validation.enabled = False
-        project.coverage.enabled = False
 
     if dry_run:
         click.echo("[dry-run] No data will be saved.")
@@ -188,10 +177,8 @@ def stats(ctx: click.Context, tracker: str | None, as_json: bool) -> None:
     import json
     import statistics
 
-    from bug_prospector.adapters.language import get_language_adapter
     from bug_prospector.core.storage import Storage
-    from bug_prospector.core.models.record import VALID, INVALID, PATCH_FAILED, SETUP_FAILED, TIMEOUT, ERROR, SKIPPED
-    from bug_prospector.core.test_effort import compute as compute_test_effort
+    from bug_prospector.core.models.record import PATCH_FAILED, SETUP_FAILED, TIMEOUT, ERROR, SKIPPED
 
     dataset_dir: Path = ctx.obj["dataset_dir"]
     storage = Storage(dataset_dir)
@@ -230,28 +217,6 @@ def stats(ctx: click.Context, tracker: str | None, as_json: bool) -> None:
     lines_added = [r.fix.lines_added for r in records]
     lines_deleted = [r.fix.lines_deleted for r in records]
     changed_files = [len(r.fix.changed_files) for r in records]
-
-    # --- test discipline (test-driven fix-correctness effort) ---
-    # 「修正の正当性をテストで保証することをどれだけ重視しているか」を示す指標:
-    # 差分が触れた関数数・新規追加テスト数・その比率を言語アダプタのテストパターンを
-    # 使って diff から近似する。
-    _patterns_cache: dict[str, list[str]] = {}
-    functions_changed: list[int] = []
-    tests_added: list[int] = []
-    tests_added_per_function: list[float] = []
-    prs_with_new_tests = 0
-    for r in records:
-        lang = r.reproduction.environment.language or ""
-        if lang not in _patterns_cache:
-            adapter = get_language_adapter(lang)
-            _patterns_cache[lang] = adapter.default_test_patterns() if adapter else []
-        effort = compute_test_effort(r.fix.diff, _patterns_cache[lang], lang)
-        functions_changed.append(effort.functions_changed)
-        tests_added.append(effort.tests_added)
-        if effort.tests_added > 0:
-            prs_with_new_tests += 1
-        if effort.tests_added_per_function is not None:
-            tests_added_per_function.append(effort.tests_added_per_function)
 
     def _stats(vals: list[int]) -> dict:
         if not vals:
@@ -350,12 +315,6 @@ def stats(ctx: click.Context, tracker: str | None, as_json: bool) -> None:
         "changed_files_per_bug": _stats(changed_files),
         "issue_age_days": _stats(ages) if ages else {},
         "test_cases": test_stats,
-        "test_discipline": {
-            "functions_changed_per_bug": _stats(functions_changed),
-            "tests_added_per_bug": _stats(tests_added),
-            "prs_with_new_tests_rate": round(prs_with_new_tests / total, 3),
-            "tests_added_per_function_changed": _stats(tests_added_per_function),
-        },
     }
 
     if as_json:
@@ -396,14 +355,6 @@ def stats(ctx: click.Context, tracker: str | None, as_json: bool) -> None:
         click.echo("\n[Issue age (days to close)]")
         click.echo(f"  {_fmt_stats(_stats(ages))}")
 
-    click.echo("\n[Test discipline]  (how much fixes lean on tests to prove correctness)")
-    click.echo(f"  functions changed/bug : {_fmt_stats(result['test_discipline']['functions_changed_per_bug'])}")
-    click.echo(f"  new tests added/bug   : {_fmt_stats(result['test_discipline']['tests_added_per_bug'])}")
-    click.echo(f"  bugs adding a new test: {result['test_discipline']['prs_with_new_tests_rate']*100:5.1f}%")
-    tapf = result["test_discipline"]["tests_added_per_function_changed"]
-    if tapf:
-        click.echo(f"  new tests / function changed: {_fmt_stats(tapf)}")
-
     n_with_cases = test_stats["with_case_data"]
     n_fallback   = test_stats["fallback_overall_only"]
     exec_fails   = test_stats["exec_failures"]
@@ -440,199 +391,6 @@ def stats(ctx: click.Context, tracker: str | None, as_json: bool) -> None:
         if any(v > 0 for v in test_stats["regression_per_bug"].values()):
             click.echo(f"\n  [buggy PASS -> fix FAIL  (regressions)]")
             click.echo(f"    {_fmt_stats(test_stats['regression_per_bug'])}")
-
-    click.echo("")
-
-
-@cli.command()
-@click.option(
-    "--languages", default="rust,java",
-    help="Comma-separated languages to compare (default: rust,java)",
-)
-@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
-@click.pass_context
-def compare(ctx: click.Context, languages: str, as_json: bool) -> None:
-    """Compare testing-quality metrics across languages (e.g. rust vs java).
-
-    Metrics per language:
-      - Validation status breakdown (valid/invalid/setup_failed/patch_failed/
-        timeout/error/skipped) - setup_failed in particular flags environment/
-        build issues, useful when comparing execution reliability across languages
-      - PR test-change rate: % of fix PRs that touch a test file at all
-      - test lines added / test files changed per PR
-      - functions changed / tests added per PR, and tests-added-per-function-changed
-        - how much developers rely on new tests (vs. just editing existing ones)
-          to justify a fix, relative to how much source code the fix touched
-      - diff coverage: % of the bug's changed lines that existing tests
-        (at the buggy commit) actually exercised - requires coverage.enabled
-      - overall line/branch coverage of the project at the buggy commit
-
-    \b
-    Example:
-      bp compare
-      bp compare --languages rust,java --json
-    """
-    import json
-    import statistics
-
-    from bug_prospector.adapters.language import get_language_adapter
-    from bug_prospector.core.models.record import MEASURED, SETUP_FAILED, SKIPPED
-    from bug_prospector.core.storage import Storage
-    from bug_prospector.core.test_effort import compute as compute_test_effort
-
-    dataset_dir: Path = ctx.obj["dataset_dir"]
-    storage = Storage(dataset_dir)
-    all_records = storage.list_all()
-
-    langs = [l.strip() for l in languages.split(",") if l.strip()]
-
-    def _stats(vals: list[float]) -> dict:
-        if not vals:
-            return {}
-        return {
-            "n": len(vals),
-            "mean": round(sum(vals) / len(vals), 3),
-            "median": round(statistics.median(vals), 3),
-            "min": round(min(vals), 3),
-            "max": round(max(vals), 3),
-        }
-
-    report: dict[str, dict] = {}
-
-    for lang in langs:
-        records = [
-            r for r in all_records
-            if (r.reproduction.environment.language or "").lower() == lang.lower()
-        ]
-        n = len(records)
-        adapter = get_language_adapter(lang)
-        patterns = adapter.default_test_patterns() if adapter else []
-
-        touched_tests = 0
-        test_lines_added: list[float] = []
-        test_files_changed: list[float] = []
-        functions_changed: list[float] = []
-        tests_added: list[float] = []
-        tests_added_per_function: list[float] = []
-        for r in records:
-            effort = compute_test_effort(r.fix.diff, patterns, lang)
-            if effort.test_files_changed > 0:
-                touched_tests += 1
-            test_lines_added.append(effort.test_lines_added)
-            test_files_changed.append(effort.test_files_changed)
-            functions_changed.append(effort.functions_changed)
-            tests_added.append(effort.tests_added)
-            if effort.tests_added_per_function is not None:
-                tests_added_per_function.append(effort.tests_added_per_function)
-
-        cov_records = [
-            r for r in records
-            if r.validation and r.validation.coverage and r.validation.coverage.status == MEASURED
-        ]
-        diff_cov = [
-            r.validation.coverage.diff_coverage_rate for r in cov_records
-            if r.validation.coverage.diff_coverage_rate is not None
-        ]
-        overall_line = [
-            r.validation.coverage.overall_line_rate for r in cov_records
-            if r.validation.coverage.overall_line_rate is not None
-        ]
-        overall_branch = [
-            r.validation.coverage.overall_branch_rate for r in cov_records
-            if r.validation.coverage.overall_branch_rate is not None
-        ]
-        zero_diff_cov = sum(1 for v in diff_cov if v == 0.0)
-
-        val_counts: dict[str, int] = {}
-        for r in records:
-            s = r.validation.status if r.validation else SKIPPED
-            val_counts[s] = val_counts.get(s, 0) + 1
-
-        report[lang] = {
-            "total_bugs": n,
-            "validation_status": val_counts,
-            "pr_test_change_rate": round(touched_tests / n, 3) if n else None,
-            "test_lines_added_per_pr": _stats(test_lines_added),
-            "test_files_changed_per_pr": _stats(test_files_changed),
-            "test_discipline": {
-                "functions_changed_per_pr": _stats(functions_changed),
-                "tests_added_per_pr": _stats(tests_added),
-                "prs_with_new_tests_rate": (
-                    round(sum(1 for v in tests_added if v > 0) / n, 3) if n else None
-                ),
-                "tests_added_per_function_changed": _stats(tests_added_per_function),
-            },
-            "coverage": {
-                "n_measured": len(cov_records),
-                "diff_coverage_rate": _stats(diff_cov),
-                "diff_coverage_zero_rate": round(zero_diff_cov / len(diff_cov), 3) if diff_cov else None,
-                "overall_line_rate": _stats(overall_line),
-                "overall_branch_rate": _stats(overall_branch),
-            },
-        }
-
-    if as_json:
-        click.echo(json.dumps(report, ensure_ascii=False, indent=2))
-        return
-
-    click.echo(f"\n{'='*72}")
-    click.echo(f"  Language comparison: {' vs '.join(langs)}")
-    click.echo(f"{'='*72}")
-
-    for lang in langs:
-        d = report[lang]
-        click.echo(f"\n[{lang}]  (total bugs: {d['total_bugs']})")
-        if d["total_bugs"] == 0:
-            click.echo("  no data collected yet")
-            continue
-
-        val_counts = d["validation_status"]
-        if val_counts:
-            breakdown = ", ".join(
-                f"{s}={n}" for s, n in sorted(val_counts.items(), key=lambda x: -x[1])
-            )
-            click.echo(f"  validation status      : {breakdown}")
-            setup_failed_n = val_counts.get(SETUP_FAILED, 0)
-            if setup_failed_n:
-                click.echo(
-                    f"    -> setup_failed (environment/build failure): "
-                    f"{setup_failed_n} ({setup_failed_n / d['total_bugs'] * 100:.1f}%)"
-                )
-
-        pct = d["pr_test_change_rate"]
-        click.echo(f"  PR touches a test file : {pct*100:5.1f}%" if pct is not None else "  n/a")
-        tla = d["test_lines_added_per_pr"]
-        if tla:
-            click.echo(f"  test lines added/PR    : mean={tla['mean']}  median={tla['median']}  max={tla['max']}")
-
-        disc = d["test_discipline"]
-        fc, ta = disc["functions_changed_per_pr"], disc["tests_added_per_pr"]
-        if fc:
-            click.echo(f"  functions changed/PR   : mean={fc['mean']}  median={fc['median']}  max={fc['max']}")
-        if ta:
-            click.echo(f"  new tests added/PR     : mean={ta['mean']}  median={ta['median']}  max={ta['max']}")
-        rate = disc["prs_with_new_tests_rate"]
-        if rate is not None:
-            click.echo(f"  PRs adding a new test  : {rate*100:5.1f}%")
-        tapf = disc["tests_added_per_function_changed"]
-        if tapf:
-            click.echo(
-                f"  new tests / function changed (PRs w/ changed functions): "
-                f"mean={tapf['mean']}  median={tapf['median']}"
-            )
-
-        cov = d["coverage"]
-        click.echo(f"  coverage measured      : {cov['n_measured']} bugs")
-        if cov["diff_coverage_rate"]:
-            dc = cov["diff_coverage_rate"]
-            click.echo(
-                f"  diff coverage (buggy lines covered by existing tests): "
-                f"mean={dc['mean']*100:.1f}%  median={dc['median']*100:.1f}%"
-            )
-            click.echo(f"    -> 0% diff coverage (bug in wholly untested code): {cov['diff_coverage_zero_rate']*100:.1f}%")
-        if cov["overall_line_rate"]:
-            olr = cov["overall_line_rate"]
-            click.echo(f"  overall line coverage  : mean={olr['mean']*100:.1f}%  median={olr['median']*100:.1f}%")
 
     click.echo("")
 
