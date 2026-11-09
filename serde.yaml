@@ -45,3 +45,14 @@ validation:
   save_test_output: true
   # true にすると失敗したテストケース名をログに出力する
   show_failed_tests: true
+
+llm:
+  # bp generate-tests 用（doc/test-generation.md 参照）
+  enabled: true
+  provider: claude_code
+  max_attempts: 3
+  max_context_chars: 20000
+  claude_code:
+    command: "claude"
+    allowed_tools: "Read,Grep,Glob,Write,Edit"
+    timeout: 900

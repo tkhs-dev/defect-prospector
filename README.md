@@ -256,7 +256,7 @@ bp export-tests --tracker https://github.com/clap-rs/clap
 | 言語 | テスト出力パーサ | 既知の制約 |
 |---|---|---|
 | Rust | `cargo test` の verbose/quiet両対応（`adapters/language/rust.py`） | ワークスペース構成では、生成テストの置き場所（ルートの `tests/` か各クレートの `tests/` か）によって `cargo test` の対象が変わる |
-| Java | Maven Surefire / Gradle test（`adapters/language/java.py`） | マルチモジュールプロジェクトは `language.test_command` を対象モジュールに明示的に絞り込む必要がある（`gson.yaml`/`log4j2.yaml` 参照）。Surefire / Gradle の標準出力からは失敗したテスト名しか取れないため、ケース単位の判定は全体の終了コードへのフォールバックに頼る場面が多い |
+| Java | Maven Surefire / Gradle test（`adapters/language/java.py`） | マルチモジュールプロジェクトは `language.test_command` を対象モジュールに明示的に絞り込む必要がある（`mvn test -pl <module> -am` 等）。Surefire / Gradle の標準出力からは失敗したテスト名しか取れないため、ケース単位の判定は全体の終了コードへのフォールバックに頼る場面が多い |
 | Python | pytest（verbose/quiet両対応、`adapters/language/python.py`） | ラベル表記（`bug` / `Bug` 等）やテスト依存関係のインストール方法（extras名 or requirements ファイル）がプロジェクトごとに違うため、`setup_commands` を個別に確認する必要がある |
 
 ## データの保存場所
@@ -279,16 +279,14 @@ generated-tests/<bug_id>/             # bp export-tests の出力（テストフ
 
 ## 設定済みプロジェクト
 
-リポジトリ直下に、次の9プロジェクトのYAML設定を用意している。
+リポジトリ直下に、次の6プロジェクトのYAML設定を用意している。Rustの3プロジェクトは
+`llm.enabled: true` で、`bp generate-tests` をそのまま実行できる。
 
 | 言語 | プロジェクト | YAML |
 |---|---|---|
 | Rust | clap-rs/clap | `clap.yaml` |
 | Rust | serde-rs/serde | `serde.yaml` |
 | Rust | BurntSushi/ripgrep | `ripgrep.yaml` |
-| Java | google/gson | `gson.yaml` |
-| Java | jhy/jsoup | `jsoup.yaml` |
-| Java | apache/logging-log4j2 | `log4j2.yaml` |
 | Python | pallets/flask | `flask.yaml` |
 | Python | fastapi/fastapi | `fastapi.yaml` |
 | Python | psf/requests | `requests.yaml` |
