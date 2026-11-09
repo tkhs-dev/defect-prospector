@@ -78,6 +78,9 @@ class ClaudeCodeConfig:
     # claude -p に渡す --allowedTools のうち、Bash(test_command) を除く固定部分
     allowed_tools: str = "Read,Grep,Glob,Write,Edit"
     timeout: int = 600
+    # Rust向けのボトムアップ構築ガイダンス（RUG由来、doc/rug-integration-note.md）をプロンプトに付けるか。
+    # false にすると「全コンテキストを渡して一発で書かせる」ワンショット形式になる（比較実験用）
+    rust_bottom_up: bool = True
 
 
 @dataclass
@@ -165,6 +168,7 @@ class ProjectConfig:
                 command=claude_code_d.get("command", "claude"),
                 allowed_tools=claude_code_d.get("allowed_tools", "Read,Grep,Glob,Write,Edit"),
                 timeout=claude_code_d.get("timeout", 600),
+                rust_bottom_up=claude_code_d.get("rust_bottom_up", True),
             ),
         )
 

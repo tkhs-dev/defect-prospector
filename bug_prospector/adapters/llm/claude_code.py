@@ -116,7 +116,7 @@ class ClaudeCodeAdapter(LLMAdapter):
             source_diff=task.source_diff,
         )
         is_rust = task.language.lower() == "rust"
-        if is_rust:
+        if is_rust and self._config.rust_bottom_up:
             prompt += _RUST_BOTTOM_UP_ADDENDUM
         if feedback:
             prompt += _FEEDBACK_SUFFIX.format(feedback=feedback)

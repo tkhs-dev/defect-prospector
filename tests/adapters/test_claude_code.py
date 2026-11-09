@@ -97,6 +97,23 @@ class TestCommandConstruction:
         allowed_tools = captured["cmd"][captured["cmd"].index("--allowedTools") + 1]
         assert "Bash(cargo *)" not in allowed_tools
 
+    def test_rust_bottom_up_disabled_gives_one_shot_prompt(self, monkeypatch, tmp_path):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return _completed(json.dumps({"is_error": False, "result": "ok", "modelUsage": {}}))
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        adapter = ClaudeCodeAdapter(ClaudeCodeConfig(rust_bottom_up=False))
+        adapter.generate_test(tmp_path, _task(test_command="cargo test", language="rust"))
+
+        prompt = captured["cmd"][captured["cmd"].index("-p") + 1]
+        assert "build bottom-up, verify as you go" not in prompt
+        # プロンプト以外の条件（ツール・権限）は揃える
+        allowed_tools = captured["cmd"][captured["cmd"].index("--allowedTools") + 1]
+        assert "Bash(cargo *)" in allowed_tools
+
     def test_feedback_is_appended_to_prompt(self, monkeypatch, tmp_path):
         captured = {}
 
