@@ -1,0 +1,50 @@
+# Java / 非同期ネットワーキングツールキット — Rust側の対応: projects/hyper.yaml
+# 使い方: bp collect --project projects/vertx.yaml
+#
+# vert.x はマルチモジュール構成。中核実装・テストは "vertx-core" サブモジュールにある。
+# pom.xml に jacoco 設定は無いため、jacoco-maven-plugin をコマンドラインから直接起動する。
+#
+# 注意: HTTPクライアント/サーバーの比較対象として当初 square/okhttp を検討したが、
+# 2026-09時点で square/okhttp・square/retrofit は "lysine-dev" という別アカウント配下に
+# 転送（リダイレクト）されており、経緯が確認できなかったため候補から除外した。
+
+project_id: "eclipse-vertx-vertx"
+
+repo:
+  url: https://github.com/eclipse-vertx/vert.x
+  vcs_type: git
+
+tracker:
+  type: github
+  url: https://github.com/eclipse-vertx/vert.x
+  auth:
+    token: ${GITHUB_TOKEN}
+
+search:
+  labels: [bug]
+  state: closed
+  limit: 500
+  since: "2014-01-01"
+  require_pr: true
+
+language:
+  type: java
+  test_patterns:
+    - "vertx-core/src/test/**"
+  setup_commands:
+    - "mvn -B -q -pl vertx-core -am -DskipTests compile test-compile"
+  test_command: "mvn -B -q -pl vertx-core -am test"
+  test_timeout: 300
+
+validation:
+  enabled: true
+  strategy: reverse_patch_source
+  save_test_output: false
+  show_failed_tests: true
+
+coverage:
+  enabled: true
+  tool: jacoco
+  command: "mvn -B -q -pl vertx-core -am org.jacoco:jacoco-maven-plugin:0.8.11:prepare-agent test org.jacoco:jacoco-maven-plugin:0.8.11:report"
+  report_path: "vertx-core/target/site/jacoco/jacoco.xml"
+  timeout: 600

@@ -68,6 +68,10 @@ def cli(ctx: click.Context, dataset_dir: str, verbose: bool) -> None:
     metavar="DATE",
     help="Override: collect issues created on/after DATE (ISO 8601)",
 )
+@click.option(
+    "--no-validation", is_flag=True,
+    help="Skip test validation and coverage (no build / test run). Only diff-based metrics are recorded.",
+)
 @click.option("--dry-run", is_flag=True, help="Preview only. Nothing is saved.")
 @click.pass_context
 def collect(
@@ -79,6 +83,7 @@ def collect(
     labels: str | None,
     limit: int | None,
     since: str | None,
+    no_validation: bool,
     dry_run: bool,
 ) -> None:
     """Collect bug records.
@@ -90,6 +95,7 @@ def collect(
     Examples:
       bp collect --project flask.yaml
       bp collect --project flask.yaml --limit 10 --dry-run
+      bp collect --project flask.yaml --no-validation
       bp collect --tracker-url https://github.com/pallets/flask --token $TOKEN
     """
     from bug_prospector.config import ProjectConfig, SearchConfig, TrackerAuth
@@ -132,6 +138,11 @@ def collect(
                 limit=limit,
             ),
         )
+
+    if no_validation:
+        # 静的指標（diff解析）のみで高速に収集する（doc/rust-vs-java-testing.md 2.1節）
+        project.validation.enabled = False
+        project.coverage.enabled = False
 
     if dry_run:
         click.echo("[dry-run] No data will be saved.")

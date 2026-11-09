@@ -1,0 +1,43 @@
+# Rust / 非同期HTTPクライアント・サーバー — Java側の対応: projects/vertx.yaml
+# 使い方: bp collect --project projects/hyper.yaml
+
+project_id: "hyperium-hyper"
+
+repo:
+  url: https://github.com/hyperium/hyper
+  vcs_type: git
+
+tracker:
+  type: github
+  url: https://github.com/hyperium/hyper
+  auth:
+    token: ${GITHUB_TOKEN}
+
+search:
+  labels: [C-bug]
+  state: closed
+  limit: 500
+  since: "2016-01-01"
+  require_pr: true
+
+language:
+  type: rust
+  test_patterns:
+    - "tests/**"
+  setup_commands:
+    - "cargo build --quiet --all-features"
+  test_command: "cargo test --all-features"
+  test_timeout: 300
+
+validation:
+  enabled: true
+  strategy: reverse_patch_source
+  save_test_output: false
+  show_failed_tests: true
+
+coverage:
+  # 事前に `cargo install cargo-llvm-cov` が必要
+  enabled: true
+  tool: cargo-llvm-cov
+  command: "cargo llvm-cov --all-features --cobertura --output-path target/llvm-cov-cobertura.xml"
+  timeout: 900

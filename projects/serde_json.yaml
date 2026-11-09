@@ -1,0 +1,44 @@
+# Rust / JSON serialization — Java側の対応: gson.yaml (リポジトリルート)
+# 使い方: bp collect --project projects/serde_json.yaml
+
+project_id: "serde-rs-json"
+
+repo:
+  url: https://github.com/serde-rs/json
+  vcs_type: git
+
+tracker:
+  type: github
+  url: https://github.com/serde-rs/json
+  auth:
+    token: ${GITHUB_TOKEN}
+
+search:
+  labels: [bug]
+  state: closed
+  # 2026-09時点で label:bug かつ linked:pr の件数は約10件と少なめ。
+  # 母数が小さいので比較結果の解釈には注意（他プロジェクトと同じ閾値で断定しない）。
+  limit: 500
+  since: "2015-01-01"
+  require_pr: true
+
+language:
+  type: rust
+  test_patterns:
+    - "tests/**"
+  setup_commands:
+    - "cargo build --quiet"
+  test_command: "cargo test"
+  test_timeout: 180
+
+validation:
+  enabled: true
+  strategy: reverse_patch_source
+  save_test_output: false
+  show_failed_tests: true
+
+coverage:
+  # 事前に `cargo install cargo-llvm-cov` が必要
+  enabled: true
+  tool: cargo-llvm-cov
+  timeout: 600

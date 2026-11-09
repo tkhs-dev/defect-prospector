@@ -150,10 +150,13 @@ llm:
 ### `bp collect`
 
 ```
-bp collect --project clap.yaml [--limit 10] [--since 2020-01-01] [--labels bug,regression] [--dry-run]
+bp collect --project clap.yaml [--limit 10] [--since 2020-01-01] [--labels bug,regression] [--no-validation] [--dry-run]
 ```
 
 - `--project/-p`: プロジェクトYAML（推奨）。CLIオプションはYAMLの値を上書きする。
+- `--no-validation`: YAMLの設定に関わらず `validation`・`coverage` を無効にし、ビルド・テスト実行なしで
+  diff解析による指標（テスト重視度）だけを記録する。ツールチェイン不要で多数のプロジェクトを
+  素早く収集したいとき（静的先行測定）に使う。
 - `--dry-run`: GitHub検索・PR特定までは実行するが、クローン/ビルド/テスト/保存は一切行わない。
   ラベル名や検索条件が正しいかを安全に確認できる。
 
@@ -331,6 +334,28 @@ generated-tests/<bug_id>/             # bp export-tests の出力（テストフ
 | Python | pallets/flask | `flask.yaml` |
 | Python | fastapi/fastapi | `fastapi.yaml` |
 | Python | psf/requests | `requests.yaml` |
+
+### Rust vs Java 比較用の追加プロジェクト
+
+Rust と Java のドメインを揃えたペア比較と、静的指標の母数拡大のために、上記の Rust/Java 6プロジェクトに
+加えて `projects/` 配下の6プロジェクトを使う（計12プロジェクト。実験設計・静的先行測定の結果は
+[doc/rust-vs-java-testing.md](doc/rust-vs-java-testing.md) 参照）。
+
+| 言語 | プロジェクト | YAML |
+|---|---|---|
+| Rust | serde-rs/json | `projects/serde_json.yaml` |
+| Rust | hyperium/hyper | `projects/hyper.yaml` |
+| Rust | tokio-rs/tokio | `projects/tokio.yaml` |
+| Java | remkop/picocli | `projects/picocli.yaml` |
+| Java | eclipse-vertx/vert.x | `projects/vertx.yaml` |
+| Java | netty/netty | `projects/netty.yaml` |
+
+12プロジェクトの一括収集・レポート生成には `scripts/` のスクリプトを使う:
+
+```bash
+./scripts/collect_all.sh --no-validation   # PowerShell: .\scripts\collect_all.ps1 -NoValidation
+./scripts/report.sh                        # PowerShell: .\scripts\report.ps1
+```
 
 ## 開発
 
