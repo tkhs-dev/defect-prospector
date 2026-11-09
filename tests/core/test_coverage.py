@@ -63,6 +63,25 @@ class TestDiffRemovedLines:
         )
         assert _diff_removed_lines(diff) == {}
 
+    def test_multiple_files(self):
+        diff = (
+            "diff --git a/a.rs b/a.rs\n"
+            "--- a/a.rs\n"
+            "+++ b/a.rs\n"
+            "@@ -1,2 +1,2 @@\n"
+            "-bad\n"
+            "+good\n"
+            " ctx\n"
+            "diff --git a/b.rs b/b.rs\n"
+            "--- a/b.rs\n"
+            "+++ b/b.rs\n"
+            "@@ -5,2 +5,2 @@\n"
+            "-bad2\n"
+            "+good2\n"
+            " ctx\n"
+        )
+        assert _diff_removed_lines(diff) == {"a.rs": {1}, "b.rs": {5}}
+
 
 class TestDiffCoverage:
     def test_touched_covered_and_total(self):

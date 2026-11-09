@@ -2,8 +2,6 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/dataset-debug-gson/repos/google-gson" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/dataset-debug-gson/worktrees/google-gson" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/dataset/repos/clap-rs-clap" vcs="Git" />
   </component>
 </project>
