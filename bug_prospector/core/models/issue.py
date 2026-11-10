@@ -19,8 +19,19 @@ class UserInfo:
         )
 
 
+# IssueInfo.kind の値: レコードの出自（doc/pr-collection.md）
+KIND_ISSUE = "issue"                # Issue起点（独立したバグ報告がある）
+KIND_PULL_REQUEST = "pull_request"  # PR起点（Issueは無く、PRのタイトル・本文が報告の代わり）
+KIND_COMMIT = "commit"              # 直接コミット（PRも無く、コミットメッセージのみ）
+SOURCE_KINDS = (KIND_ISSUE, KIND_PULL_REQUEST, KIND_COMMIT)
+
+
 @dataclass
 class IssueInfo:
+    """
+    バグの出自情報。kind=issue なら Issue、pull_request なら PR、commit なら修正コミットの情報で埋める
+    （issue_id は Issue/PR 番号またはコミットSHA、issue_url はそれぞれのURL）。
+    """
     tracker_type: str
     tracker_url: str
     issue_id: str
@@ -34,6 +45,7 @@ class IssueInfo:
     assignees: list[UserInfo] = field(default_factory=list)
     closed_at: datetime | None = None
     linked_prs: list[str] = field(default_factory=list)
+    kind: str = KIND_ISSUE
 
     @classmethod
     def from_dict(cls, d: dict) -> IssueInfo:
@@ -51,6 +63,7 @@ class IssueInfo:
             assignees=[UserInfo.from_dict(a) for a in d.get("assignees", [])],
             closed_at=_dt(d.get("closed_at")),
             linked_prs=d.get("linked_prs", []),
+            kind=d.get("kind", KIND_ISSUE),
         )
 
 

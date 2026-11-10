@@ -14,9 +14,12 @@ tracker:
     token: ${GITHUB_TOKEN}
 
 search:
-  labels: [bug]
+  # serde は2019年以降ほぼラベルを付けていない（closed Issue の約9割がラベルなし）ため、
+  # ラベルでは絞らず、修正PR/コミットを特定できた Issue をLLMでバグか判定する（llm.classify_bugs）
+  labels: []
   state: closed
-  limit: 500
+  # 上限なし（closed Issue 約1650件。GitHub検索の1000件上限は期間分割で回避する）
+  limit: null
   since: "2011-01-01"
   # true: マージ済みPRが紐付いていないIssueはスキップ
   require_pr: true
@@ -52,7 +55,46 @@ llm:
   provider: claude_code
   max_attempts: 3
   max_context_chars: 20000
+  # true: fixにテストが同梱されていても、FAIL→PASSを確認できていなければ生成対象にする
+  #       （＝有効なテストが付属していない場合のみ生成）
+  include_fixes_with_tests: true
+  # true: 生成前にLLMへ「テストで再現可能か」を尋ね、不可能と答えたものは生成対象から外す
+  #       （プログラム起因でないバグ・環境依存のバグ等。判定結果は dataset.db に保存される）
+  screening: true
+  # true: bp collect 時にLLMへ「バグ報告とその修正か」を尋ね、そうでないものは
+  #       validation=not_bug としてテスト検証せずに記録する
+  classify_bugs: true
   claude_code:
     command: "claude"
     allowed_tools: "Read,Grep,Glob,Write,Edit"
     timeout: 900
+
+# 修正の機械的な確認（doc/fix-checks.md）。各値は off / record（結果を記録）/ exclude（落ちたら fix_rejected として除外）
+# ここが全収集元の既定値で、sources.<収集元>.fix_checks でキー単位に上書きできる
+fix_checks:
+  revert: record
+  follow_up_fix: record
+  follow_up_window_days: 30
+  release: record
+  ci: record
+
+# 収集元（doc/pr-collection.md）。bp collect --source <name> で一時的に上書きできる
+sources:
+  issues:
+    enabled: true
+  # Issueに紐付かないマージ済みPR
+  pull_requests:
+    enabled: true
+    title_keywords: null      # 例: [fix, bug, panic]。null なら絞らない（LLMバグ判定に任せる）
+    max_source_lines: 2000
+    fix_checks:
+      revert: exclude
+  # PRを経由しないデフォルトブランチへの直接コミット（独立したバグ報告もレビューも無いため確認を厳しめに）
+  commits:
+    enabled: true
+    title_keywords: null
+    max_source_lines: 2000
+    exclude_pr_commits: true
+    fix_checks:
+      revert: exclude
+      follow_up_fix: exclude

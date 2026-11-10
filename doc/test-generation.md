@@ -48,10 +48,35 @@
 
 - `repository.buggy_commit` / `fix_commit` が両方とも空でない
   （`require_pr=false` 時の `_build_record_no_pr()` によるスケルトンレコードは対象外）
-- `patch.split_diff(fix.diff, test_patterns)` の `test_diff` が空（＝修正にテストが伴っていない）
+- `patch.split_diff(fix.diff, test_patterns)` の `test_diff` が空（＝修正にテストが伴っていない）。
+  ただし `llm.include_fixes_with_tests: true` のときはこの条件を外し、テストが同梱されていても
+  次の `validation.status` 条件を満たす（＝同梱テストでFAIL→PASSを確認できていない）レコードを対象に含める
 - `validation.status` が `invalid`（または `skipped` など、FAIL→PASS が確認できていない状態）
 - まだ `reproduction.generated_test` が `confirmed=True` の状態で存在しない（冪等性。`Storage.exists()` による
   `bp collect` の二重収集スキップと同じ考え方）
+- `reproduction.testability` が `testable=False` でない（3.1節の生成可否判定で除外されていない）
+
+### 3.1 生成可否の事前判定（`llm.screening`）
+
+バグラベル付きIssueであっても、原因がプログラムに無いもの（ドキュメント・CI・ビルド設定・依存更新、
+上流クレートやコンパイラ側の問題等）や、特定OS・端末・タイミング等に依存してテストでは安定して
+再現できないものが混ざる。こうしたレコードにテスト生成を試みるとコストがかかるうえ、データセットに
+収録するのにも適さない。
+
+`llm.screening: true` のとき、`TestGenerator.run` は各候補について生成の前に
+`LLMAdapter.assess_testability(task)` を呼び、Issue本文とソース差分だけから「テストで再現可能か」を
+判定させる。
+
+- Claude Code 実装は `claude -p --tools "" --json-schema ...` で起動する。ツールは与えず、
+  `{testable: bool, category, reason}` の構造化出力を受け取る。
+  `category` は `program_bug` / `not_program_bug` / `environment_dependent` / `insufficient_information`。
+- 判定結果は `reproduction.testability`（`TestabilityInfo`）として即座に保存する。
+  `testable=False` のレコードは `is_candidate()` で除外され、以降の実行でも対象外のまま
+  （`bp generate-tests --rescreen` で再判定できる）。
+- 判定自体が失敗した場合（タイムアウト・応答の解釈不能等）は何も保存せず、そのレコードの生成も行わない
+  （次回実行で再判定される）。
+- `--screen-only` で判定だけを先に一括実行できる。結果の内訳は `bp stats` の
+  `[LLM testability screening]` に表示される。
 
 `bp collect` の中では実行せず、別コマンド `bp generate-tests`（4節）として独立させる。LLM呼び出し＋
 fix/buggy 両状態でのビルド・テスト実行を伴うため収集時より大幅にコストが高く、明示的なオプトインが妥当。
@@ -394,6 +419,8 @@ bp generate-tests [options]
 | `--bug-id ID` | 対象を特定のバグIDに限定（複数指定可） |
 | `--limit N` | 処理する候補レコード数の上限 |
 | `--max-attempts N` | `llm.max_attempts` を上書き |
+| `--screen-only` | 生成可否の事前判定（3.1節）だけを行い、テスト生成はしない（`llm.screening: true` が必要） |
+| `--rescreen` | 選択したレコードの既存の判定結果を無視して、LLMに再判定させる（`llm.screening: true` が必要） |
 | `--dry-run` | 候補の一覧のみ表示し、LLM呼び出し（`claude` CLI 起動）は行わない |
 
 実装注記: `--retry-failed` は実装していない（10.2節「冪等性」参照。未確認の試行を永続化しないため、

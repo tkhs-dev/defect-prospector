@@ -20,6 +20,27 @@ class TestGenerationTask:
     test_command: str
     sample_test_files: dict[str, str] = field(default_factory=dict)  # 既存テストのサンプル(path -> 内容)
     bug_id: str = ""              # 使用量ログ等でレコードを識別するためのID
+    fix_title: str = ""           # 修正PRのタイトル（コミット直接の修正ならコミットメッセージ1行目）
+    # レコードの出自（IssueInfo.kind）。issue 以外では issue_title/issue_body に PR本文 or コミットメッセージが入る
+    source_kind: str = "issue"
+
+
+@dataclass
+class TestabilityVerdict:
+    """LLMAdapter.assess_testability の戻り値。"""
+    testable: bool
+    category: str
+    reason: str
+    model: str = ""
+
+
+@dataclass
+class BugVerdict:
+    """LLMAdapter.classify_bug の戻り値。"""
+    is_bug: bool
+    category: str
+    reason: str
+    model: str = ""
 
 
 class LLMAdapter(ABC):
@@ -53,3 +74,24 @@ class LLMAdapter(ABC):
         Raises:
             生成に失敗した場合（プロセスエラー・タイムアウト・空応答等）は例外を送出する。
         """
+
+    def assess_testability(self, task: TestGenerationTask) -> TestabilityVerdict:
+        """
+        再現テスト生成の前段で、Issue・ソース差分から「このバグはテストで再現可能か」を判定する
+        （doc/test-generation.md 3.1節）。プログラム起因でない（ドキュメント・CI・依存更新等）、
+        環境依存でテストでは安定して再現できない、といったレコードを生成対象から外すために使う。
+
+        Raises:
+            判定に失敗した場合（プロセスエラー・タイムアウト・応答の解釈不能等）は例外を送出する。
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support testability screening")
+
+    def classify_bug(self, task: TestGenerationTask) -> BugVerdict:
+        """
+        収集時に、Issue と修正差分から「バグ報告とその修正か」を判定する（doc/bug-classification.md）。
+        ラベルでバグを管理していないプロジェクトから、機能要望・質問・ドキュメント修正等を除くために使う。
+
+        Raises:
+            判定に失敗した場合（プロセスエラー・タイムアウト・応答の解釈不能等）は例外を送出する。
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support bug classification")

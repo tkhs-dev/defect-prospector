@@ -65,6 +65,9 @@ bp stats
 2. **PR特定**: IssueのタイムラインからリンクされたマージPRを取得し、その
    `merge_commit` を **fixコミット**、その親コミットを **buggyコミット** とする。
 3. **diff取得**: buggy→fix の unified diff、変更ファイル一覧、追加/削除行数を取得。
+   - `llm.classify_bugs: true` のときは、ここでLLMに「バグ報告とその修正か」を判定させ、
+     そうでなければテスト検証をせず `not_bug` として保存する。ラベルでバグを管理していない
+     プロジェクト（serde等）で `search.labels: []` と組み合わせて使う（[doc/bug-classification.md](doc/bug-classification.md)）。
 4. **テスト検証**（`validation.enabled: true` のとき）:
    `reverse_patch_source` 戦略 — fixコミットのワークツリーでソースファイルだけを
    逆パッチ適用し（**テストファイルはfix版のまま残す**）、
@@ -104,7 +107,7 @@ tracker:
     token: ${GITHUB_TOKEN}         # ${VAR} で環境変数を参照できる
 
 search:
-  labels: [C-bug]                 # プロジェクトごとにバグラベルの表記が違うので要確認
+  labels: [C-bug]                 # プロジェクトごとにバグラベルの表記が違うので要確認。[] ならラベルで絞らない
   state: closed
   limit: 500                      # GitHub検索で取得する最大件数
   since: "2011-01-01"
@@ -130,11 +133,26 @@ llm:
   provider: claude_code           # 現状はclaude_codeのみ（claude -p をサブプロセス起動）
   max_attempts: 3                 # 1レコードあたりの生成・検証リトライ上限
   max_context_chars: 20000        # プロンプトに埋め込むIssue本文/diffの文字数上限
+  include_fixes_with_tests: false # true でテスト同梱でもFAIL→PASS未確認のfixを生成対象に含める
+  screening: false                # true で生成前にLLMへ「テストで再現可能か」を尋ね、不可能なものを除外する
+  classify_bugs: false            # true で bp collect 時にLLMへ「バグ報告とその修正か」を尋ね、違えば not_bug として記録
   claude_code:
     command: "claude"             # PATH上のclaudeコマンド名、またはフルパス
     allowed_tools: "Read,Grep,Glob,Write,Edit"
     timeout: 600
     rust_bottom_up: true          # Rust向けのボトムアップ構築ガイダンスをプロンプトに付けるか
+
+fix_checks:                       # 修正の機械的な確認。off / record / exclude（doc/fix-checks.md）
+  revert: record                  # 後でリバートされていないか
+  follow_up_fix: record           # 追加した行が30日以内に書き換えられていないか（修正の修正の疑い）
+  release: record                 # 修正を含むタグがあるか
+  ci: record                      # CIが失敗していないか
+
+sources:                          # 収集元のオンオフ（doc/pr-collection.md）
+  issues: {enabled: true}
+  pull_requests: {enabled: false} # Issueに紐付かないマージ済みPR
+  commits: {enabled: false}       # PRを経由しない直接コミット
+  # 各収集元に fix_checks: を書くと、上の既定値をキー単位で上書きできる
 ```
 
 `--project` を使わない簡易実行もできる（`bp collect --tracker-url <url> --token <token>`）。
@@ -145,10 +163,16 @@ llm:
 ### `bp collect`
 
 ```
-bp collect --project clap.yaml [--limit 10] [--since 2020-01-01] [--labels bug,regression] [--dry-run]
+bp collect --project clap.yaml [--limit 10] [--since 2020-01-01] [--labels bug,regression]
+           [--source issues|pull_requests|commits]... [--dry-run]
 ```
 
 - `--project/-p`: プロジェクトYAML（推奨）。CLIオプションはYAMLの値を上書きする。
+- `--source`: 指定した収集元だけから収集する（YAMLの `sources.*.enabled` を上書き。複数指定可）。
+  収集元は Issue起点 → PR起点 → 直接コミットの順に実行し、前の収集元で取り込んだ修正は後で重複しない。
+  出自はレコードの `source.kind`（issue / pull_request / commit）に記録され、`bp stats` で区別して集計される。
+  独立したバグ報告を持たない pull_request / commit は修正の正しさの根拠が弱い点に注意（[doc/fix-checks.md](doc/fix-checks.md)）。
+- `--limit`: 収集元ごとに、走査する候補（Issue / PR / コミット）の数の上限。
 - `--dry-run`: GitHub検索・PR特定までは実行するが、クローン/ビルド/テスト/保存は一切行わない。
   ラベル名や検索条件が正しいかを安全に確認できる。
 
@@ -194,14 +218,24 @@ fixコミットでPASS・buggyコミット（ソース差分のみ逆パッチ�
 
 ```
 bp generate-tests --project <project>.yaml [--tracker <URLの前方一致>] [--status <validationステータス>]
-                   [--bug-id <ID>]... [--limit N] [--max-attempts N] [--dry-run]
+                   [--bug-id <ID>]... [--kind <出自>]... [--limit N] [--max-attempts N] [--screen-only] [--rescreen] [--dry-run]
 ```
 
 - プロジェクトYAMLに `llm.enabled: true` が必要（既定は無効）。
-- 対象は「buggy/fixコミットが両方解決済み」「fixのdiffにテスト変更を含まない」「validationが
+- 対象は「buggy/fixコミットが両方解決済み」「fixのdiffにテスト変更を含まない（`llm.include_fixes_with_tests: true`
+  ならこの条件は外れ、テストが同梱されていても有効でなければ対象）」「validationが
   まだFAIL→PASSを確認できていない状態（`invalid`/`setup_failed`/`patch_failed`/`timeout`/`error`/
-  `skipped`）」「未確認の生成テストで既にconfirmed済みでない」をすべて満たすレコード。
+  `skipped`）」「未確認の生成テストで既にconfirmed済みでない」「生成可否の事前判定で除外されていない」
+  をすべて満たすレコード。
+- `llm.screening: true` のときは、生成の前にLLMへ「このバグはテストで再現可能か」を尋ねる
+  （Issue本文とソース差分のみで判定し、ツールは使わせない）。プログラム起因でない
+  （ドキュメント・CI・依存更新等）、環境依存でテストでは安定して再現できない、などの理由で
+  「不可能」と答えたレコードは生成せず、判定結果を `BugRecord.reproduction.testability` に保存して
+  以降も対象外とする。`--screen-only` で判定だけを先に実行でき、`--rescreen` で再判定できる。
+  判定結果の内訳は `bp stats` に表示される（詳細は [doc/test-generation.md](doc/test-generation.md) 3.1節）。
 - `--dry-run` で候補一覧のみ表示し、LLM呼び出しは行わない。
+- `--kind issue|pull_request|commit`（複数指定可）で出自を絞って生成できる。独立したバグ報告の無い
+  pull_request / commit では、生成テストが修正後の挙動を写しただけになり得るため、`llm_valid` の根拠が弱い。
 - Rust（`language.type: rust`）のレコードでは、[RUG論文](doc/rug-paper-summary.md)の
   「型依存をノード単位に分解し、コンパイラ検証しながらボトムアップに積み上げる」という
   アイデアをプロンプトに取り込み、`cargo check` による自己検証を促す（詳細は
@@ -217,6 +251,9 @@ bp generate-tests --project <project>.yaml [--tracker <URLの前方一致>] [--s
 ```bash
 # 候補件数と対象レコードのみ確認（LLM呼び出しなし）
 bp generate-tests --project clap.yaml --dry-run
+
+# 生成可否の判定だけを先に行う（llm.screening: true が必要。テスト生成はしない）
+bp generate-tests --project clap.yaml --screen-only
 
 # 実際に生成・検証する（クローン済みリポジトリ・cargo等のツールチェインが必要）
 bp generate-tests --project clap.yaml --limit 5
@@ -250,6 +287,8 @@ bp export-tests --tracker https://github.com/clap-rs/clap
 | `setup_failed` | 環境構築コマンド（`setup_commands`）が失敗した |
 | `error` | 検証処理自体で例外が発生した |
 | `skipped` | `validation.enabled: false` のため検証を行わなかった |
+| `fix_rejected` | `fix_checks` で `exclude` にした確認（リバート・修正の修正・未リリース・CI失敗）に落ちた（テスト検証せず。[doc/fix-checks.md](doc/fix-checks.md)） |
+| `not_bug` | `llm.classify_bugs: true` で、収集時のLLM判定によりバグ修正ではないとされた（テスト検証せず。[doc/bug-classification.md](doc/bug-classification.md)） |
 
 ## 対応言語アダプタと制約
 

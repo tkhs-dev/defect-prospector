@@ -15,11 +15,13 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ...config import ClaudeCodeConfig
-from .base import LLMAdapter, TestGenerationTask
+from ...core.models.record import BUG_CATEGORIES, TESTABILITY_CATEGORIES
+from .base import BugVerdict, LLMAdapter, TestabilityVerdict, TestGenerationTask
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +93,129 @@ once. Work bottom-up and verify incrementally instead:
 """
 
 
+_SCREENING_PROMPT = """You are screening candidate bugs for an automated bug-dataset collection tool. Each candidate is a GitHub issue that was closed by a merged fix. A later step will ask an LLM to write a regression test that FAILS on the code before the fix and PASSES after it. Decide whether such a test can realistically be written for this candidate, so that unsuitable candidates are excluded from the dataset.
+
+Answer testable=true only if ALL of the following hold:
+  - The root cause is in the program's own source code (its logic/behaviour),     and the fix below changes that behaviour.
+  - The behavioural difference can be observed deterministically by an automated     test using the project's test framework ({language}; test command:     `{test_command}`), without special hardware, a specific OS/terminal, real     network services, manual interaction, or timing luck.
+
+Otherwise answer testable=false. Typical reasons:
+  - not_program_bug: documentation/typo, CI or build configuration, packaging,     dependency or toolchain version bumps, refactoring with no behaviour change,     or the actual cause lies outside this project (upstream crate, compiler, user error).
+  - environment_dependent: the bug only shows up on a particular platform,     terminal, locale, filesystem, network condition or timing, and cannot be     reproduced reliably in a test.
+  - insufficient_information: the issue and diff do not make clear what behaviour     differs before and after the fix.
+Use category=program_bug when testable=true.
+
+Judge only from the information below; do not ask questions. Keep the reason to one or two sentences.
+
+## Issue
+Title: {issue_title}
+
+{issue_body}
+
+## Fix (source-only diff; any test changes from the original fix, if present, are omitted)
+```diff
+{source_diff}
+```
+"""
+
+_SCREENING_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "testable": {"type": "boolean"},
+        "category": {"type": "string", "enum": list(TESTABILITY_CATEGORIES)},
+        "reason": {"type": "string"},
+    },
+    "required": ["testable", "category", "reason"],
+    "additionalProperties": False,
+}
+
+_BUG_CLASSIFICATION_PROMPT = """\
+You are filtering GitHub issues for an automated bug-dataset collection tool. \
+The issue below was closed, and the change shown below was identified as its \
+fix (from a merged pull request or commit that references the issue; this \
+link is heuristic and may be wrong).
+
+Decide whether this is a genuine BUG that the change fixes: the issue reports \
+behaviour of the project's own code that is incorrect (wrong output, crash/panic, \
+spurious error, regression, code that should compile but doesn't because of the \
+project, etc.), and the change corrects that behaviour in the project's source.
+
+Answer is_bug=false when any of these apply:
+  - feature_request: the issue asks for new functionality or an enhancement \
+    to behaviour that was working as designed.
+  - question: a usage question or support request, or the reporter's own mistake.
+  - documentation: only documentation, comments or examples are wrong or changed.
+  - maintenance: build/CI/packaging/dependency/toolchain chores, refactoring \
+    or performance work with no incorrect behaviour.
+  - unrelated_fix: the issue describes a bug, but the change shown does not \
+    actually fix it (the link between issue and change is wrong).
+  - other: spam, discussion, or anything else that is not a bug fix.
+Use category=bug when is_bug=true.
+
+Judge only from the information below; do not ask questions. Keep the reason to \
+one or two sentences.
+
+## Issue
+Title: {issue_title}
+
+{issue_body}
+
+## Change identified as the fix
+Title: {fix_title}
+
+Source-only diff (any test changes are omitted):
+```diff
+{source_diff}
+```
+"""
+
+# PR起点・直接コミット用: 独立したバグ報告（Issue）は無く、修正者自身の説明しかない
+_FIX_ONLY_CLASSIFICATION_PROMPT = """\
+You are filtering code changes for an automated bug-dataset collection tool. \
+The change below was merged into the default branch {origin}. There is NO \
+separate bug report: the only description is the one written by the author \
+of the change itself, so judge mainly from what the code change actually does.
+
+Decide whether this change is a genuine BUG FIX: before the change, the \
+project's own code behaved incorrectly (wrong output, crash/panic, spurious \
+error, regression, code that should compile but doesn't because of the \
+project, etc.), and the change corrects that behaviour in the project's source.
+
+Answer is_bug=false when any of these apply:
+  - feature_request: the change adds new functionality or enhances behaviour \
+    that was working as designed.
+  - documentation: only documentation, comments or examples are changed.
+  - maintenance: build/CI/packaging/dependency/toolchain chores, lint or \
+    warning cleanups, refactoring or performance work with no incorrect behaviour.
+  - other: anything else that is not a bug fix.
+Use category=bug when is_bug=true.
+
+Judge only from the information below; do not ask questions. Keep the reason to \
+one or two sentences.
+
+## {description_heading}
+Title: {issue_title}
+
+{issue_body}
+
+## Source-only diff (any test changes are omitted)
+```diff
+{source_diff}
+```
+"""
+
+_BUG_CLASSIFICATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "is_bug": {"type": "boolean"},
+        "category": {"type": "string", "enum": list(BUG_CATEGORIES)},
+        "reason": {"type": "string"},
+    },
+    "required": ["is_bug", "category", "reason"],
+    "additionalProperties": False,
+}
+
+
 class ClaudeCodeAdapter(LLMAdapter):
 
     provider = "claude_code"
@@ -139,23 +264,7 @@ class ClaudeCodeAdapter(LLMAdapter):
             "--allowedTools", allowed_tools,
         ]
 
-        try:
-            result = subprocess.run(
-                cmd, cwd=worktree, capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=self._config.timeout,
-            )
-        except subprocess.TimeoutExpired as e:
-            raise RuntimeError(f"claude -p timed out after {self._config.timeout}s") from e
-
-        data = _parse_json(result.stdout)
-        self._record_usage(task, data, result.returncode)
-        if data is None:
-            raise RuntimeError(
-                f"claude -p produced no parseable JSON output "
-                f"(exit={result.returncode}): {result.stderr[:2000]}"
-            )
-        if data.get("is_error"):
-            raise RuntimeError(f"claude -p reported an error: {data.get('result', '')[:2000]}")
+        data = self._run(cmd, worktree, task, kind="generate")
 
         denials = data.get("permission_denials") or []
         if denials:
@@ -163,12 +272,99 @@ class ClaudeCodeAdapter(LLMAdapter):
 
         return _extract_model(data)
 
-    def _record_usage(self, task: TestGenerationTask, data: dict | None, returncode: int) -> None:
+    def assess_testability(self, task: TestGenerationTask) -> TestabilityVerdict:
+        prompt = _SCREENING_PROMPT.format(
+            language=task.language,
+            test_command=task.test_command,
+            issue_title=task.issue_title,
+            issue_body=task.issue_body,
+            source_diff=task.source_diff,
+        )
+        verdict, model = self._judge(prompt, _SCREENING_SCHEMA, "testable", task, kind="screen")
+        return TestabilityVerdict(
+            testable=verdict["testable"],
+            category=str(verdict.get("category", "")),
+            reason=str(verdict.get("reason", "")),
+            model=model,
+        )
+
+    def classify_bug(self, task: TestGenerationTask) -> BugVerdict:
+        if task.source_kind == "issue":
+            prompt = _BUG_CLASSIFICATION_PROMPT.format(
+                issue_title=task.issue_title,
+                issue_body=task.issue_body,
+                fix_title=task.fix_title or "(unknown)",
+                source_diff=task.source_diff,
+            )
+        else:
+            is_pr = task.source_kind == "pull_request"
+            prompt = _FIX_ONLY_CLASSIFICATION_PROMPT.format(
+                origin="through a pull request" if is_pr else "as a direct commit (no pull request)",
+                description_heading="Pull request description" if is_pr else "Commit message",
+                issue_title=task.issue_title,
+                issue_body=task.issue_body or "(empty)",
+                source_diff=task.source_diff,
+            )
+        verdict, model = self._judge(prompt, _BUG_CLASSIFICATION_SCHEMA, "is_bug", task, kind="classify")
+        return BugVerdict(
+            is_bug=verdict["is_bug"],
+            category=str(verdict.get("category", "")),
+            reason=str(verdict.get("reason", "")),
+            model=model,
+        )
+
+    def _judge(
+        self, prompt: str, schema: dict, decision_key: str, task: TestGenerationTask, kind: str,
+    ) -> tuple[dict, str]:
+        """ツールなしの claude -p に構造化出力で判定させ、(判定結果の dict, モデル名) を返す。"""
+        # 判定はプロンプト内の情報だけで行わせる（ツールは一切与えない）。
+        # cwd に CLAUDE.md 等が無い空ディレクトリを使い、無関係な文脈が混ざらないようにする。
+        cmd = [
+            self._config.command, "-p", prompt,
+            "--output-format", "json",
+            "--permission-prompts", "none",
+            "--restricted",
+            "--tools", "",
+            "--json-schema", json.dumps(schema),
+        ]
+        with tempfile.TemporaryDirectory(prefix=f"bp-{kind}-") as cwd:
+            data = self._run(cmd, Path(cwd), task, kind=kind)
+
+        verdict = data.get("structured_output")
+        if not isinstance(verdict, dict):
+            verdict = _parse_json(str(data.get("result", "")))
+        if not isinstance(verdict, dict) or not isinstance(verdict.get(decision_key), bool):
+            raise RuntimeError(f"claude -p returned no usable {kind} verdict: {str(data.get('result', ''))[:2000]}")
+        return verdict, _extract_model(data)
+
+    def _run(self, cmd: list[str], cwd: Path, task: TestGenerationTask, kind: str) -> dict:
+        """claude -p を実行し、使用量を記録したうえで JSON 出力を返す。失敗時は RuntimeError。"""
+        try:
+            result = subprocess.run(
+                cmd, cwd=cwd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=self._config.timeout,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError(f"claude -p timed out after {self._config.timeout}s") from e
+
+        data = _parse_json(result.stdout)
+        self._record_usage(task, data, result.returncode, kind)
+        if data is None:
+            raise RuntimeError(
+                f"claude -p produced no parseable JSON output "
+                f"(exit={result.returncode}): {result.stderr[:2000]}"
+            )
+        if data.get("is_error"):
+            raise RuntimeError(f"claude -p reported an error: {data.get('result', '')[:2000]}")
+        return data
+
+    def _record_usage(self, task: TestGenerationTask, data: dict | None, returncode: int, kind: str) -> None:
         data = data or {}
         usage = data.get("usage") or {}
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "bug_id": task.bug_id,
+            "kind": kind,  # "screen"（生成可否の判定） / "generate"（テスト生成）
             "model": _extract_model(data),
             "exit_code": returncode,
             "is_error": bool(data.get("is_error")) if data else True,

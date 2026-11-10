@@ -2,7 +2,10 @@
 テストが同梱されていないバグ修正に対し、LLMで再現テストを合成する（doc/test-generation.md）。
 
 対象: fix.diff にテスト変更が含まれず（split_diff の test_diff が空）、
-FAIL→PASS を確認できていないレコード。bp collect とは別のオプトインコマンド
+FAIL→PASS を確認できていないレコード（llm.include_fixes_with_tests が true なら
+テスト変更の有無は問わない）。llm.screening が true なら、生成の前にLLMへ
+「テストで再現可能か」を尋ね、不可能と答えたレコードは生成せず対象から外す（判定結果は
+reproduction.testability に保存し、以降の実行でも対象外のままにする）。bp collect とは別のオプトインコマンド
 （bp generate-tests）として実行する。
 """
 from __future__ import annotations
@@ -10,11 +13,12 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from ..adapters.llm.base import LLMAdapter, TestGenerationTask
 from ..config import LanguageConfig, LLMConfig
-from .models.record import BugRecord, LLM_VALID, ValidationResult
+from .models.record import BugRecord, LLM_VALID, TestabilityInfo, ValidationResult
 from .patch import split_diff
 from .storage import Storage
 from .validator import Validator
@@ -25,15 +29,24 @@ logger = logging.getLogger(__name__)
 _RETARGETABLE_STATUSES = {"invalid", "skipped", "setup_failed", "patch_failed", "timeout", "error"}
 
 
-def is_candidate(record: BugRecord, test_patterns: list[str]) -> bool:
-    """record が再現テスト生成の対象かどうかを判定する（doc/test-generation.md 3節）。"""
+def is_candidate(record: BugRecord, test_patterns: list[str], include_fixes_with_tests: bool = False) -> bool:
+    """
+    record が再現テスト生成の対象かどうかを判定する（doc/test-generation.md 3節）。
+
+    include_fixes_with_tests=True のときは、fixにテストが同梱されていても
+    FAIL→PASS を確認できていない（有効なテストが付属していない）レコードを対象に含める。
+    """
     if not record.repository.buggy_commit or not record.repository.fix_commit:
         return False
     if record.reproduction.generated_test and record.reproduction.generated_test.confirmed:
         return False
+    if record.reproduction.testability and not record.reproduction.testability.testable:
+        return False
     status = record.validation.status if record.validation else "skipped"
     if status not in _RETARGETABLE_STATUSES:
         return False
+    if include_fixes_with_tests:
+        return True
     _, test_diff = split_diff(record.fix.diff, test_patterns)
     return not test_diff.strip()
 
@@ -55,18 +68,34 @@ class TestGenerator:
         self._llm_config = llm_config
         self._lang = lang_config
 
-    def run(self, repo_path: Path, records: list[BugRecord]) -> tuple[int, int, int]:
+    def run(
+        self, repo_path: Path, records: list[BugRecord], screen_only: bool = False,
+    ) -> tuple[int, int, int, int]:
         """
-        Returns: (confirmed, failed, skipped)
+        screen_only=True のときは生成可否の判定だけ行い、テスト生成はしない。
+
+        Returns: (confirmed, failed, skipped, excluded)
+          excluded: 生成可否の判定で「テストで再現不可能」とされ、生成対象から外した件数
         """
-        confirmed = failed = skipped = 0
+        confirmed = failed = skipped = excluded = 0
         self.outcomes: dict[str, tuple[bool, int]] = {}
         for record in records:
-            if not is_candidate(record, self._lang.test_patterns):
+            if not is_candidate(record, self._lang.test_patterns, self._llm_config.include_fixes_with_tests):
                 skipped += 1
                 continue
 
             task = self._build_task(record)
+            if self._llm_config.screening and record.reproduction.testability is None:
+                if not self._screen(record, task):
+                    # 判定自体に失敗したレコードは、生成せずに次回実行で再判定する
+                    failed += 1
+                    continue
+                if not record.reproduction.testability.testable:
+                    excluded += 1
+                    continue
+            if screen_only:
+                continue
+
             source_diff, _ = split_diff(record.fix.diff, self._lang.test_patterns)
 
             result = self._validator.validate_with_generated_test(
@@ -93,7 +122,27 @@ class TestGenerator:
                 failed += 1
                 logger.info(f"  [{record.id}] failed after {result.attempts} attempt(s), skipping")
 
-        return confirmed, failed, skipped
+        return confirmed, failed, skipped, excluded
+
+    def _screen(self, record: BugRecord, task: TestGenerationTask) -> bool:
+        """LLMに生成可否を判定させ、結果を record に保存する。判定に失敗したら False。"""
+        try:
+            verdict = self._llm.assess_testability(task)
+        except Exception as e:
+            logger.warning(f"  [{record.id}] testability screening failed: {e}")
+            return False
+        record.reproduction.testability = TestabilityInfo(
+            testable=verdict.testable,
+            category=verdict.category,
+            reason=verdict.reason,
+            provider=self._llm.provider,
+            model=verdict.model,
+            assessed_at=datetime.now(timezone.utc),
+        )
+        self._storage.save(record)
+        label = "testable" if verdict.testable else f"NOT testable ({verdict.category})"
+        logger.info(f"  [{record.id}] screening: {label}: {verdict.reason}")
+        return True
 
     def _build_task(self, record: BugRecord) -> TestGenerationTask:
         source_diff, _ = split_diff(record.fix.diff, self._lang.test_patterns)

@@ -68,6 +68,11 @@ def cli(ctx: click.Context, dataset_dir: str, verbose: bool) -> None:
     metavar="DATE",
     help="Override: collect issues created on/after DATE (ISO 8601)",
 )
+@click.option(
+    "--source", "sources", multiple=True,
+    type=click.Choice(["issues", "pull_requests", "commits"]),
+    help="Override sources.*.enabled: collect only from these sources (repeatable)",
+)
 @click.option("--dry-run", is_flag=True, help="Preview only. Nothing is saved.")
 @click.pass_context
 def collect(
@@ -79,6 +84,7 @@ def collect(
     labels: str | None,
     limit: int | None,
     since: str | None,
+    sources: tuple[str, ...],
     dry_run: bool,
 ) -> None:
     """Collect bug records.
@@ -91,6 +97,7 @@ def collect(
       bp collect --project flask.yaml
       bp collect --project flask.yaml --limit 10 --dry-run
       bp collect --tracker-url https://github.com/pallets/flask --token $TOKEN
+      bp collect --project serde.yaml --source pull_requests --source commits
     """
     from bug_prospector.config import ProjectConfig, SearchConfig, TrackerAuth
     from bug_prospector.core.collector import Collector
@@ -133,11 +140,27 @@ def collect(
             ),
         )
 
+    if sources:
+        for name in ("issues", "pull_requests", "commits"):
+            getattr(project.sources, name).enabled = name in sources
+
     if dry_run:
         click.echo("[dry-run] No data will be saved.")
     click.echo(f"Collecting bugs from {project.tracker_url} ...")
     if project.validation.enabled:
         click.echo(f"  Validation enabled  (strategy={project.validation.strategy})")
+    enabled_sources = [n for n in ("issues", "pull_requests", "commits") if getattr(project.sources, n).enabled]
+    click.echo(f"  Sources: {', '.join(enabled_sources) or '(none)'}")
+    for name in enabled_sources:
+        checks = getattr(project.sources, name).fix_checks
+        modes = {n: checks.mode(n) for n in ("revert", "follow_up_fix", "release", "ci") if checks.mode(n) != "off"}
+        if modes:
+            click.echo(f"    {name} fix checks: " + ", ".join(f"{k}={v}" for k, v in modes.items()))
+    if project.sources.issues.enabled and not project.search.labels:
+        click.echo("  No label filter: every closed issue with an identifiable fix is considered")
+    if project.llm.classify_bugs:
+        click.echo("  LLM bug classification enabled  (non-bugs are recorded as validation=not_bug)"
+                   + ("  [skipped in dry-run]" if dry_run else ""))
 
     from bug_prospector.core.collector import CollectionInterrupted
 
@@ -152,6 +175,12 @@ def collect(
         )
         click.echo(f"  validation status: {breakdown}")
 
+    def _echo_llm_cost() -> None:
+        usage = getattr(getattr(collector, "classifier", None), "usage_records", [])
+        if usage:
+            cost = sum(u.get("total_cost_usd") or 0.0 for u in usage)
+            click.echo(f"  LLM bug classification: {len(usage)} call(s), ${cost:.4f}")
+
     try:
         new, skipped, failed, validation_counts = collector.run_project(
             project=project,
@@ -160,11 +189,16 @@ def collect(
         )
         click.echo(f"\nCollected: {new} new  |  {skipped} skipped  |  {failed} failed")
         _echo_validation_counts(validation_counts)
+        if len(collector.source_counts) > 1:
+            for name, t in collector.source_counts.items():
+                click.echo(f"  [{name}] {t.new} new  |  {t.skipped} skipped  |  {t.failed} failed")
+        _echo_llm_cost()
     except CollectionInterrupted as e:
         click.echo(
             f"\n[interrupted] Collected so far: {e.new} new  |  {e.skipped} skipped  |  {e.failed} failed"
         )
         _echo_validation_counts(e.validation_counts)
+        _echo_llm_cost()
         raise SystemExit(1)
 
 
@@ -212,6 +246,42 @@ def stats(ctx: click.Context, tracker: str | None, as_json: bool) -> None:
         else:
             s = SKIPPED
         val_counts[s] = val_counts.get(s, 0) + 1
+
+    # --- LLM bug classification (bp collect, llm.classify_bugs) ---
+    # --- source kind（出自: issue / pull_request / commit）と、出自ごとの validation status ---
+    kind_counts: dict[str, int] = {}
+    status_by_kind: dict[str, dict[str, int]] = {}
+    for r in records:
+        kind = getattr(r.source, "kind", "issue")
+        kind_counts[kind] = kind_counts.get(kind, 0) + 1
+        s = r.validation.status if r.validation else SKIPPED
+        per = status_by_kind.setdefault(kind, {})
+        per[s] = per.get(s, 0) + 1
+
+    # --- fix checks（doc/fix-checks.md）: 確認ごとの pass / fail / unknown ---
+    check_counts: dict[str, dict[str, int]] = {}
+    for r in records:
+        for name, result in (r.fix_checks or {}).items():
+            outcome = {True: "pass", False: "fail", None: "unknown"}[result.passed]
+            per = check_counts.setdefault(name, {"pass": 0, "fail": 0, "unknown": 0})
+            per[outcome] += 1
+
+    classification_counts: dict[str, int] = {}
+    for r in records:
+        c = r.bug_classification
+        if c is None:
+            continue
+        key = "bug" if c.is_bug else f"not a bug: {c.category}"
+        classification_counts[key] = classification_counts.get(key, 0) + 1
+
+    # --- LLM testability screening (bp generate-tests, llm.screening) ---
+    screening_counts: dict[str, int] = {}
+    for r in records:
+        t = r.reproduction.testability
+        if t is None:
+            continue
+        key = "testable" if t.testable else f"not testable: {t.category}"
+        screening_counts[key] = screening_counts.get(key, 0) + 1
 
     # --- fix size stats ---
     lines_added = [r.fix.lines_added for r in records]
@@ -310,6 +380,11 @@ def stats(ctx: click.Context, tracker: str | None, as_json: bool) -> None:
         "by_language": lang_counts,
         "by_tracker": tracker_counts,
         "validation": val_counts,
+        "by_source_kind": kind_counts,
+        "validation_by_source_kind": status_by_kind,
+        "fix_checks": check_counts,
+        "bug_classification": classification_counts,
+        "testability_screening": screening_counts,
         "fix_lines_added": _stats(lines_added),
         "fix_lines_deleted": _stats(lines_deleted),
         "changed_files_per_bug": _stats(changed_files),
@@ -345,6 +420,29 @@ def stats(ctx: click.Context, tracker: str | None, as_json: bool) -> None:
 
     click.echo("\n[Validation status]")
     _bar(val_counts, total)
+
+    if set(kind_counts) - {"issue"}:
+        click.echo("\n[Source kind]  (issue: independent bug report / pull_request: PR only / commit: direct commit)")
+        _bar(kind_counts, total)
+        click.echo("\n[Validation status by source kind]")
+        for kind, per in status_by_kind.items():
+            breakdown = ", ".join(f"{s}={n}" for s, n in sorted(per.items(), key=lambda x: -x[1]))
+            click.echo(f"  {kind:<14} {breakdown}")
+
+    if check_counts:
+        click.echo("\n[Fix checks]  (pass / fail / unknown)")
+        for name, per in check_counts.items():
+            click.echo(f"  {name:<15} {per['pass']:>5} / {per['fail']:>5} / {per['unknown']:>5}")
+
+    if classification_counts:
+        n_classified = sum(classification_counts.values())
+        click.echo(f"\n[LLM bug classification]  (classified: {n_classified})")
+        _bar(classification_counts, n_classified)
+
+    if screening_counts:
+        n_screened = sum(screening_counts.values())
+        click.echo(f"\n[LLM testability screening]  (screened: {n_screened})")
+        _bar(screening_counts, n_screened)
 
     click.echo("\n[Fix size]")
     click.echo(f"  lines added   : {_fmt_stats(_stats(lines_added))}")
@@ -551,8 +649,23 @@ def export_tests(
     "--bug-id", "bug_ids", multiple=True,
     help="Filter by exact bug ID (repeatable)",
 )
+@click.option(
+    "--kind", "kinds", multiple=True,
+    type=click.Choice(["issue", "pull_request", "commit"]),
+    help="Only target records of these source kinds (repeatable). "
+         "Without an independent bug report (pull_request/commit), a generated test can only "
+         "reflect the fix's own behaviour, so llm_valid there is weaker evidence.",
+)
 @click.option("--limit", type=int, default=None, help="Max candidate records to process")
 @click.option("--max-attempts", type=int, default=None, help="Override llm.max_attempts from the config")
+@click.option(
+    "--screen-only", is_flag=True,
+    help="Only run the testability screening (requires llm.screening: true); do not generate tests.",
+)
+@click.option(
+    "--rescreen", is_flag=True,
+    help="Discard previous screening verdicts of the selected records and ask the LLM again.",
+)
 @click.option("--dry-run", is_flag=True, help="List candidates only. No LLM calls are made.")
 @click.pass_context
 def generate_tests(
@@ -561,15 +674,20 @@ def generate_tests(
     tracker: str | None,
     status_filter: str | None,
     bug_ids: tuple[str, ...],
+    kinds: tuple[str, ...],
     limit: int | None,
     max_attempts: int | None,
+    screen_only: bool,
+    rescreen: bool,
     dry_run: bool,
 ) -> None:
     """Generate reproduction tests for bugs whose fix has no accompanying test.
 
     Targets records whose fix diff contains no test-file changes and whose
     validation hasn't confirmed a FAIL->PASS reproduction yet (see
-    doc/test-generation.md). Uses the project's `llm:` config to synthesize a
+    doc/test-generation.md). With `llm.include_fixes_with_tests: true`, fixes
+    that do include tests are also targeted as long as those tests didn't
+    confirm FAIL->PASS. Uses the project's `llm:` config to synthesize a
     new test, then verifies it mechanically (fails on the buggy commit, passes
     on the fix commit) using the same worktree/reverse-patch machinery as
     `bp collect`'s validation step. Confirmed records are upgraded to
@@ -578,11 +696,19 @@ def generate_tests(
     retried on the next run (there is currently no persisted "already tried
     and failed" state).
 
+    With `llm.screening: true`, each candidate is first screened: the LLM is
+    asked whether the bug can be reproduced by a test at all (e.g. it is not
+    caused by the program itself, or depends on the environment). Records
+    judged untestable are excluded, and the verdict is stored in
+    reproduction.testability so they stay excluded on later runs
+    (use --rescreen to ask again).
+
     \b
     Examples:
       bp generate-tests --project flask.yaml --dry-run
       bp generate-tests --project flask.yaml --limit 5
       bp generate-tests --project flask.yaml --bug-id github-pallets-flask-1234
+      bp generate-tests --project clap.yaml --screen-only
     """
     from bug_prospector.adapters.llm import get_llm_adapter
     from bug_prospector.adapters.tracker.github import GitHubAdapter
@@ -601,6 +727,8 @@ def generate_tests(
         )
     if max_attempts is not None:
         project.llm.max_attempts = max_attempts
+    if (screen_only or rescreen) and not project.llm.screening:
+        raise click.UsageError("--screen-only/--rescreen require `llm.screening: true` in the project config.")
 
     storage = Storage(dataset_dir)
     all_records = storage.list_all()
@@ -611,19 +739,42 @@ def generate_tests(
         records = [r for r in records if (r.validation.status if r.validation else "skipped") == status_filter]
     if bug_ids:
         records = [r for r in records if r.id in bug_ids]
+    if kinds:
+        records = [r for r in records if getattr(r.source, "kind", "issue") in kinds]
+    if rescreen:
+        # メモリ上でだけ判定結果を消す。再判定に成功したレコードは TestGenerator が上書き保存する
+        for r in records:
+            r.reproduction.testability = None
 
-    candidates = [r for r in records if is_candidate(r, project.language.test_patterns)]
+    screened_out = [
+        r for r in records
+        if r.reproduction.testability and not r.reproduction.testability.testable
+    ]
+    candidates = [
+        r for r in records
+        if is_candidate(r, project.language.test_patterns, project.llm.include_fixes_with_tests)
+    ]
     if limit is not None:
         candidates = candidates[:limit]
 
-    click.echo(f"{len(candidates)} candidate record(s) found (fix has no accompanying test, not yet confirmed).")
+    criterion = (
+        "no valid accompanying test" if project.llm.include_fixes_with_tests
+        else "fix has no accompanying test"
+    )
+    click.echo(f"{len(candidates)} candidate record(s) found ({criterion}, not yet confirmed).")
+    if screened_out:
+        click.echo(f"  ({len(screened_out)} record(s) excluded earlier by screening as not testable)")
     if not candidates:
         return
 
     preview = candidates[:20]
     for r in preview:
         s = r.validation.status if r.validation else "skipped"
-        click.echo(f"  {r.id}  (validation={s})")
+        t = r.reproduction.testability
+        screening = "" if not project.llm.screening else (
+            "  screening=pending" if t is None else "  screening=testable"
+        )
+        click.echo(f"  {r.id}  (validation={s}){screening}")
     if len(candidates) > len(preview):
         click.echo(f"  ... and {len(candidates) - len(preview)} more")
 
@@ -634,7 +785,8 @@ def generate_tests(
     slug = GitHubAdapter.parse_slug(project.tracker_url)
     repo_slug_flat = slug.replace("/", "-")
     local_repo = dataset_dir / "repos" / repo_slug_flat
-    GitAdapter().ensure_repo(project.repo_url, local_repo)
+    if not screen_only:  # 生成可否の判定はIssue・diffだけで行うため、クローンは不要
+        GitAdapter().ensure_repo(project.repo_url, local_repo)
 
     worktree_path = dataset_dir / "worktrees" / repo_slug_flat
     validator = Validator(project.language, project.validation, worktree_path=worktree_path)
@@ -645,14 +797,20 @@ def generate_tests(
         llm_config=project.llm, lang_config=project.language,
     )
 
-    click.echo(f"\nGenerating reproduction tests for {len(candidates)} candidate record(s)...")
+    if screen_only:
+        click.echo(f"\nScreening {len(candidates)} candidate record(s) for testability...")
+    else:
+        click.echo(f"\nGenerating reproduction tests for {len(candidates)} candidate record(s)...")
     try:
-        confirmed, failed, _skipped = generator.run(local_repo, candidates)
+        confirmed, failed, _skipped, excluded = generator.run(local_repo, candidates, screen_only=screen_only)
     finally:
         validator.close()
         _print_llm_usage(getattr(llm, "usage_records", []), getattr(generator, "outcomes", {}), usage_log_path)
 
-    click.echo(f"\nGenerated: {confirmed} confirmed  |  {failed} failed")
+    if screen_only:
+        click.echo(f"\nScreening: {excluded} excluded as not testable  |  {failed} screening error(s)")
+    else:
+        click.echo(f"\nGenerated: {confirmed} confirmed  |  {failed} failed  |  {excluded} excluded by screening")
 
 
 def _print_llm_usage(usage_records: list[dict], outcomes: dict[str, tuple[bool, int]], log_path: Path) -> None:
@@ -675,9 +833,12 @@ def _print_llm_usage(usage_records: list[dict], outcomes: dict[str, tuple[bool, 
     click.echo(fmt.format(*header))
     total = {"calls": 0, "cost": 0.0, "turns": 0, **{k: 0 for k in keys}}
     for bug_id, agg in per_bug.items():
-        ok, _ = outcomes.get(bug_id, (False, 0))
+        if bug_id in outcomes:
+            result = "confirmed" if outcomes[bug_id][0] else "failed"
+        else:
+            result = "screened"  # 生成まで進まなかった（判定のみ）
         click.echo(fmt.format(
-            bug_id, "confirmed" if ok else "failed", agg["calls"], agg["turns"],
+            bug_id, result, agg["calls"], agg["turns"],
             *(agg[k] for k in keys), f"{agg['cost']:.4f}",
         ))
         for k in total:

@@ -11,6 +11,9 @@
 | [data-schema.md](data-schema.md) | BugRecordのデータモデル定義・ストレージ形式 |
 | [adapter-interface.md](adapter-interface.md) | VCS / IssueTracker / Language アダプタのABCと拡張方法 |
 | [cli-spec.md](cli-spec.md) | CLIコマンド仕様（設計初期のもの。末尾に実装との差分注記あり） |
+| [bug-classification.md](bug-classification.md) | ラベルで絞らずに収集し、LLMでバグか判定する `llm.classify_bugs` |
+| [pr-collection.md](pr-collection.md) | Issueを経由しない修正（マージ済みPR・直接コミット）の収集と収集元のオンオフ `sources:` |
+| [fix-checks.md](fix-checks.md) | 修正の機械的な確認（リバート・修正の修正・リリース・CI）`fix_checks:` |
 | [test-generation.md](test-generation.md) | テスト非同梱バグに対するLLMベース再現テスト生成の設計・`bp generate-tests`コマンド |
 | [rug-paper-summary.md](rug-paper-summary.md) | RUG論文（Rust向けLLMテスト生成＋ファジング）の要約 |
 | [rug-integration-note.md](rug-integration-note.md) | RUGのdefect-prospector統合スコープ決定の記録 |

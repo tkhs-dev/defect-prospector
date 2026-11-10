@@ -38,6 +38,9 @@ class PRInfo:
     pr_url: str
     title: str
     merge_commit: str   # merge commit SHA (= fix_commit)
+    head_sha: str = ""  # PRブランチ先頭のSHA（CI結果の確認に使う。不明なら空）
+    # PR起点の収集で判定したマージ方式（merge / squash / rebase）。Issue起点では空
+    merge_method: str = ""
 
     @classmethod
     def from_dict(cls, d: dict) -> PRInfo:
@@ -46,6 +49,8 @@ class PRInfo:
             pr_url=d["pr_url"],
             title=d["title"],
             merge_commit=d["merge_commit"],
+            head_sha=d.get("head_sha", ""),
+            merge_method=d.get("merge_method", ""),
         )
 
 
@@ -110,6 +115,89 @@ class GeneratedTestInfo:
         )
 
 
+@dataclass
+class TestabilityInfo:
+    """
+    再現テスト生成前に、LLMに「このバグはテストで再現可能か」を判定させた結果
+    （doc/test-generation.md 3.1節）。testable=False のレコードは生成対象から外す。
+    """
+    testable: bool
+    category: str             # TESTABILITY_CATEGORIES のいずれか
+    reason: str               # LLMによる判定理由
+    provider: str
+    model: str
+    assessed_at: datetime
+
+    @classmethod
+    def from_dict(cls, d: dict) -> TestabilityInfo:
+        return cls(
+            testable=d["testable"],
+            category=d.get("category", ""),
+            reason=d.get("reason", ""),
+            provider=d.get("provider", ""),
+            model=d.get("model", ""),
+            assessed_at=datetime.fromisoformat(d["assessed_at"]),
+        )
+
+
+# TestabilityInfo.category の値
+TESTABILITY_CATEGORIES = (
+    "program_bug",              # プログラムのロジック起因で、テストで再現できる
+    "not_program_bug",          # ドキュメント・CI・ビルド設定・依存更新等、プログラム起因でない
+    "environment_dependent",    # 特定OS/端末/ネットワーク/タイミング等に依存し、テストで安定して再現できない
+    "insufficient_information", # Issue・diffから振る舞いの違いを特定できない
+)
+
+
+@dataclass
+class BugClassificationInfo:
+    """
+    収集時に、LLMに「この Issue はバグ報告で、特定した変更はその修正か」を判定させた結果
+    （doc/bug-classification.md）。is_bug=False のレコードはテスト検証せず validation.status=not_bug で保存する。
+    """
+    is_bug: bool
+    category: str             # BUG_CATEGORIES のいずれか
+    reason: str
+    provider: str
+    model: str
+    assessed_at: datetime
+
+    @classmethod
+    def from_dict(cls, d: dict) -> BugClassificationInfo:
+        return cls(
+            is_bug=d["is_bug"],
+            category=d.get("category", ""),
+            reason=d.get("reason", ""),
+            provider=d.get("provider", ""),
+            model=d.get("model", ""),
+            assessed_at=datetime.fromisoformat(d["assessed_at"]),
+        )
+
+
+@dataclass
+class FixCheckResult:
+    """修正の機械的な確認1件の結果（doc/fix-checks.md）。"""
+    passed: bool | None   # None は判定不能（CI結果が無い等）。exclude モードでも除外しない
+    detail: str           # 人が読む要約
+    data: dict = field(default_factory=dict)  # 確認ごとの詳細（リバートしたコミット、タグ名等）
+
+    @classmethod
+    def from_dict(cls, d: dict) -> FixCheckResult:
+        return cls(passed=d.get("passed"), detail=d.get("detail", ""), data=d.get("data", {}) or {})
+
+
+# BugClassificationInfo.category の値
+BUG_CATEGORIES = (
+    "bug",
+    "feature_request",
+    "question",
+    "documentation",
+    "maintenance",
+    "unrelated_fix",   # Issueはバグだが、特定した変更がその修正ではない
+    "other",
+)
+
+
 # ---------------------------------------------------------------------------
 # 検証結果
 # ---------------------------------------------------------------------------
@@ -123,6 +211,8 @@ TIMEOUT = "timeout"
 ERROR = "error"
 SKIPPED = "skipped"
 LLM_VALID = "llm_valid"   # LLMが合成した再現テストでFAIL→PASSを確認（バグ認定）
+NOT_BUG = "not_bug"       # 収集時のLLM判定でバグ修正ではないとされた（テスト検証せず）
+FIX_REJECTED = "fix_rejected"  # exclude モードの修正確認（fix_checks）に落ちた（テスト検証せず）
 
 
 @dataclass
@@ -175,6 +265,7 @@ class ReproInfo:
     expected_behavior: str | None = None
     actual_behavior: str | None = None
     generated_test: GeneratedTestInfo | None = None
+    testability: TestabilityInfo | None = None
 
     @classmethod
     def from_dict(cls, d: dict) -> ReproInfo:
@@ -184,6 +275,7 @@ class ReproInfo:
             expected_behavior=d.get("expected_behavior"),
             actual_behavior=d.get("actual_behavior"),
             generated_test=GeneratedTestInfo.from_dict(d["generated_test"]) if d.get("generated_test") else None,
+            testability=TestabilityInfo.from_dict(d["testability"]) if d.get("testability") else None,
         )
 
 
@@ -241,6 +333,9 @@ class BugRecord:
     metadata: MetaInfo
     pr: PRInfo | None = None
     validation: ValidationResult | None = None
+    bug_classification: BugClassificationInfo | None = None
+    # 修正の機械的な確認の結果（確認名 → 結果）。実行しなかった確認は含まれない
+    fix_checks: dict[str, FixCheckResult] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict) -> BugRecord:
@@ -253,4 +348,8 @@ class BugRecord:
             metadata=MetaInfo.from_dict(d["metadata"]),
             pr=PRInfo.from_dict(d["pr"]) if d.get("pr") else None,
             validation=ValidationResult.from_dict(d["validation"]) if d.get("validation") else None,
+            bug_classification=(
+                BugClassificationInfo.from_dict(d["bug_classification"]) if d.get("bug_classification") else None
+            ),
+            fix_checks={k: FixCheckResult.from_dict(v) for k, v in (d.get("fix_checks") or {}).items()},
         )

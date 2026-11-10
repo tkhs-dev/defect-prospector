@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ...config import LLMConfig
-from .base import LLMAdapter, TestGenerationTask
+from .base import BugVerdict, LLMAdapter, TestabilityVerdict, TestGenerationTask
 from .claude_code import ClaudeCodeAdapter
 
 
@@ -14,4 +14,4 @@ def get_llm_adapter(llm_config: LLMConfig, usage_log_path: Path | None = None) -
     raise ValueError(f"Unknown LLM provider: {llm_config.provider!r}")
 
 
-__all__ = ["LLMAdapter", "TestGenerationTask", "ClaudeCodeAdapter", "get_llm_adapter"]
+__all__ = ["BugVerdict", "LLMAdapter", "TestabilityVerdict", "TestGenerationTask", "ClaudeCodeAdapter", "get_llm_adapter"]
